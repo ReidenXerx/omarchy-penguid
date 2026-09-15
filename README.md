@@ -1,6 +1,6 @@
 <h1 align="center"><img src="assets/penguid-wordmark.svg" alt="PenguID" width="420"></h1>
 
-Face unlock for Omarchy. Open the lid, look at the screen, and you're in: a lock screen that recognizes you with the IR camera, plus face for sudo and polkit. The password always works, and it stays the first unlock after boot. Project page: https://reidenxerx.github.io/omarchy-penguid/
+Face unlock for Omarchy. Open the lid, look at the screen, and you're in: a lock screen that recognizes you with the IR camera, plus face for sudo and polkit. The password always works, and it stays the first unlock after boot. Project page: https://duduphudu.app/omarchy-penguid/
 
 It replaces the built-in lock screen (`clonedFrom: omarchy.lock`) and keeps its password and fingerprint lanes unchanged. Next to them it runs a third PAM service, `omarchy-lock-face`:
 
