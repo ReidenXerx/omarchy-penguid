@@ -1,0 +1,866 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// PenguID: Omarchy's lock screen with a face lane. See NOTICE for credits.
+import QtQuick
+import Quickshell
+import Quickshell.Io
+import Quickshell.Services.Pam
+import Quickshell.Wayland
+import qs.Commons
+
+Item {
+  id: root
+
+  property var shell: null
+  property string omarchyPath: ""
+
+  readonly property string home: Quickshell.env("HOME")
+  readonly property string stateHome: home + "/.local/state"
+  readonly property string userName: Quickshell.env("USER") || Quickshell.env("LOGNAME")
+  readonly property string currentBackgroundLink: stateHome + "/omarchy/current/background"
+
+  property bool lockRequested: false
+  property bool pendingSessionLock: false
+  property bool authenticatingPassword: false
+  property bool fingerprintAuthenticating: false
+  property bool faceAuthenticating: false
+  property bool passwordPamConfigured: false
+  property bool fingerprintConfigured: false
+  property bool faceConfigured: false
+  property int faceAttemptCount: 0
+  property double faceActivityEligibleAt: 0
+  property bool lidClosedDuringLock: false
+  property int lidObservationGeneration: 0
+  property bool previewVisible: false
+  property string enteredPassword: ""
+  property string pendingPassword: ""
+  property string failureMessage: ""
+  property int failedAttempts: 0
+  property string backgroundPath: ""
+  property int backgroundVersion: 0
+  property bool displayBlanked: false
+  property string lastEvent: "init"
+  property string lastEventAt: ""
+  property bool strandedLock: false
+  property bool strandedLockResolved: false
+
+  readonly property bool locked: lockRequested || sessionLock.locked || sessionLock.secure
+  readonly property bool authenticating: authenticatingPassword || fingerprintAuthenticating || faceAuthenticating
+  readonly property int faceAttemptLimit: 3
+  readonly property int faceRetryDelay: 250
+  readonly property int faceActivityDebounce: 750
+  readonly property int lidPollInterval: 1000
+
+  // Password rules for face unlock, as on Face ID: the password is needed again after 48 hours
+  // without it, or after 5 refusals of a face in a row. They live in a small state file so a shell
+  // restart does not reset them. The session login (a password at the login screen) counts as a
+  // password use. Anything unproven counts as "not recent": face stays off until the password.
+  readonly property string faceStateDir: stateHome + "/penguid"
+  readonly property string faceStatePath: faceStateDir + "/state.json"
+  readonly property double facePasswordMaxAgeMs: 48 * 3600 * 1000
+  readonly property int faceFailureLimit: 5
+  // irlume's PAM text when an attempt ended without a usable face in view.
+  readonly property string faceNoFaceMessage: "look at the camera"
+  property double sessionStartedAt: 0
+  property double lastPasswordAt: 0
+  property int faceFailures: 0
+  property bool faceSawNoFace: false
+  property string faceBlockedReason: ""
+
+  function realScreenCount() {
+    var screens = Quickshell.screens || []
+    var count = 0
+
+    for (var i = 0; i < screens.length; i++) {
+      var screen = screens[i]
+      if (screen && screen.name && screen.width > 0 && screen.height > 0) count += 1
+    }
+
+    return count
+  }
+
+  function hasRealScreen() {
+    return realScreenCount() > 0
+  }
+
+  function queueSessionLock() {
+    pendingSessionLock = true
+    if (!sessionLockStabilizeTimer.running) logEvent("lock-pending: screen-stabilizing")
+    sessionLockStabilizeTimer.restart()
+    if (!pendingSessionLockTimer.running) pendingSessionLockTimer.start()
+  }
+
+  function requestSessionLock() {
+    if (!lockRequested || sessionLock.locked || sessionLock.secure) return
+    if (sessionLockStabilizeTimer.running) return
+
+    if (!hasRealScreen()) {
+      if (!pendingSessionLock || lastEvent !== "lock-pending: no-real-screen") logEvent("lock-pending: no-real-screen")
+      pendingSessionLock = true
+      if (!pendingSessionLockTimer.running) pendingSessionLockTimer.start()
+      return
+    }
+
+    pendingSessionLock = false
+    pendingSessionLockTimer.stop()
+    sessionLock.locked = true
+  }
+
+  // ext-session-lock outlives its client, and a restart carries no lock over, so
+  // a session locked this early is an orphan behind Hyprland's failsafe. Outputs
+  // are often still absent here, so ask until the answer means something.
+  function checkStrandedLock() {
+    if (strandedLockResolved || strandedLockCheckProc.running) return
+
+    // A lock this shell took is nobody's orphan.
+    if (locked || lockRequested) {
+      strandedLockResolved = true
+      return
+    }
+
+    strandedLockCheckProc.running = true
+  }
+
+  function recoverStrandedLock() {
+    if (!strandedLock || locked || !passwordPamConfigured) return
+
+    strandedLock = false
+    logEvent("lock-stranded: recovering")
+    beginLock()
+  }
+
+  function refreshBackground() {
+    if (!readlinkProc.running) readlinkProc.running = true
+  }
+
+  function refreshFingerprintStatus() {
+    if (!fingerprintCheckProc.running) fingerprintCheckProc.running = true
+  }
+
+  function logEvent(event) {
+    lastEvent = event
+    lastEventAt = new Date().toISOString()
+    console.log("omarchy lock " + lastEventAt + " " + event)
+  }
+
+  function stopFaceAuthentication() {
+    faceRetryTimer.stop()
+    faceAttemptCount = 0
+    faceAuthenticating = false
+
+    // PamContext.abort() emits no completion, so cleanup cannot enter the
+    // failure path and accidentally restart the camera.
+    if (facePam.active) facePam.abort()
+  }
+
+  function resetFaceAuthentication() {
+    stopFaceAuthentication()
+    lidObservationGeneration += 1
+    faceActivityEligibleAt = 0
+    lidClosedDuringLock = false
+  }
+
+  function resetAuthenticationState() {
+    enteredPassword = ""
+    pendingPassword = ""
+    failureMessage = ""
+    failedAttempts = 0
+    authenticatingPassword = false
+    fingerprintAuthenticating = false
+    fingerprintRetryTimer.stop()
+    if (passwordPam.active) passwordPam.abort()
+    if (fingerprintPam.active) fingerprintPam.abort()
+    resetFaceAuthentication()
+  }
+
+  function beginLock() {
+    if (!passwordPamConfigured) {
+      logEvent("lock-denied: missing-pam")
+      return false
+    }
+
+    resetAuthenticationState()
+    refreshFaceBlock()
+    lockRequested = true
+    armBlankTimer()
+    logEvent("lock-requested")
+    queueSessionLock()
+
+    Qt.callLater(function() {
+      root.refreshBackground()
+      root.refreshFingerprintStatus()
+    })
+
+    return true
+  }
+
+  function finishUnlock() {
+    if (!root.locked && !lockRequested) return
+
+    lockRequested = false
+    pendingSessionLock = false
+    sessionLockStabilizeTimer.stop()
+    pendingSessionLockTimer.stop()
+    resetAuthenticationState()
+    idleBlankTimer.stop()
+    sessionLock.locked = false
+    logEvent("unlocked")
+    runWake()
+  }
+
+  function armBlankTimer() {
+    idleBlankTimer.armedAt = Date.now()
+    idleBlankTimer.restart()
+  }
+
+  function runWake() {
+    displayBlanked = false
+    if (!wakeProcess.running) wakeProcess.running = true
+    if (lockRequested) armBlankTimer()
+  }
+
+  function runBlank() {
+    displayBlanked = true
+    if (!blankProcess.running) blankProcess.running = true
+  }
+
+  function handlePointerMoved() {
+    var wasBlanked = displayBlanked
+    runWake()
+    if (wasBlanked) recordFaceActivity()
+  }
+
+  function submitPassword(value) {
+    var password = String(value || "")
+    if (!lockRequested || authenticatingPassword || password.length === 0) return
+
+    runWake()
+    pendingPassword = password
+    failureMessage = ""
+    authenticatingPassword = true
+
+    if (!passwordPam.start()) {
+      handlePasswordFailure()
+      return
+    }
+
+    Qt.callLater(respondToPasswordPrompt)
+  }
+
+  function respondToPasswordPrompt() {
+    if (!authenticatingPassword || !passwordPam.active || !passwordPam.responseRequired) return
+    passwordPam.respond(pendingPassword)
+  }
+
+  function handlePasswordFailure() {
+    if (!lockRequested) return
+
+    authenticatingPassword = false
+    enteredPassword = ""
+    pendingPassword = ""
+    failedAttempts += 1
+    failureMessage = "Authentication failed (" + failedAttempts + ")"
+    runWake()
+  }
+
+  function startFingerprint() {
+    if (!lockRequested || !sessionLock.secure || !fingerprintConfigured) return
+    if (fingerprintPam.active || fingerprintAuthenticating) return
+
+    fingerprintAuthenticating = true
+    if (!fingerprintPam.start()) {
+      fingerprintAuthenticating = false
+    }
+  }
+
+  function handleFingerprintFinished(result) {
+    fingerprintAuthenticating = false
+
+    if (!lockRequested) return
+    if (result === PamResult.Success) {
+      finishUnlock()
+    } else if (fingerprintConfigured) {
+      fingerprintRetryTimer.restart()
+    }
+  }
+
+  function faceBlockReason() {
+    if (faceFailures >= faceFailureLimit) return "failures"
+    var last = Math.max(lastPasswordAt, sessionStartedAt)
+    if (last <= 0) return "unknown"
+    if (Date.now() - last > facePasswordMaxAgeMs) return "48h"
+    return ""
+  }
+
+  function refreshFaceBlock() {
+    var reason = faceBlockReason()
+    if (reason !== faceBlockedReason) {
+      faceBlockedReason = reason
+      logEvent(reason ? "face-blocked: " + reason : "face-allowed")
+    }
+    return reason
+  }
+
+  function loadFaceState(text) {
+    var state = {}
+    try {
+      state = JSON.parse(text || "{}") || {}
+    } catch (e) {
+      state = {}
+    }
+    lastPasswordAt = Number(state.lastPasswordAt) || 0
+    faceFailures = Math.max(0, Math.floor(Number(state.faceFailures) || 0))
+    refreshFaceBlock()
+  }
+
+  function saveFaceState() {
+    faceStateFile.setText(JSON.stringify({ version: 1, lastPasswordAt: lastPasswordAt, faceFailures: faceFailures }, null, 2) + "\n")
+  }
+
+  function recordPasswordUnlock() {
+    lastPasswordAt = Date.now()
+    faceFailures = 0
+    saveFaceState()
+    refreshFaceBlock()
+  }
+
+  function activateFaceAuthentication() {
+    // A nonzero count covers both an active PAM call and a pending retry.
+    if (faceAttemptCount > 0) return false
+
+    startFaceAttempt()
+    return faceAttemptCount > 0
+  }
+
+  function recordFaceActivity() {
+    if (lidClosedDuringLock || faceActivityEligibleAt === 0 || Date.now() < faceActivityEligibleAt) return
+    activateFaceAuthentication()
+  }
+
+  function recordLidClosed() {
+    if (!lockRequested || !faceConfigured) return
+    stopFaceAuthentication()
+    lidClosedDuringLock = true
+    logEvent("face-stop: lid-closed")
+  }
+
+  function startLidCheck() {
+    if (!lockRequested || !faceConfigured || lidCheckProc.running) return
+    lidCheckProc.generation = lidObservationGeneration
+    lidCheckProc.running = true
+  }
+
+  function startFaceAttempt() {
+    // A retry runs later, so recheck the same safety conditions each time.
+    if (!lockRequested || !sessionLock.secure || !faceConfigured || lidClosedDuringLock) {
+      resetFaceAuthentication()
+      return
+    }
+    if (refreshFaceBlock()) {
+      stopFaceAuthentication()
+      return
+    }
+    if (facePam.active || faceAuthenticating) return
+
+    faceAttemptCount += 1
+    faceAuthenticating = true
+    faceSawNoFace = false
+    logEvent("face-attempt " + faceAttemptCount)
+
+    if (!facePam.start()) finishFaceAttempt(false, false)
+  }
+
+  function finishFaceAttempt(succeeded, counted) {
+    faceAuthenticating = false
+    var noFace = faceSawNoFace
+    logEvent((succeeded ? "face-granted" : (noFace ? "face-no-face" : "face-refused")) + " attempt " + faceAttemptCount)
+
+    // Only a face that was seen and refused counts toward the password rule; an empty view or a
+    // PAM start failure does not.
+    if (succeeded) {
+      if (faceFailures !== 0) {
+        faceFailures = 0
+        saveFaceState()
+      }
+    } else if (counted && !noFace) {
+      faceFailures += 1
+      saveFaceState()
+    }
+
+    if (!lockRequested || !sessionLock.secure || !faceConfigured) {
+      resetFaceAuthentication()
+      return
+    }
+    if (succeeded) {
+      faceAttemptCount = 0
+      finishUnlock()
+      return
+    }
+    if (refreshFaceBlock()) {
+      stopFaceAuthentication()
+      return
+    }
+
+    if (faceAttemptCount < faceAttemptLimit) {
+      faceRetryTimer.restart()
+    } else {
+      // Three failures stop here; a later key, click, or touch may try again.
+      logEvent("face-stop: attempt-limit")
+      faceAttemptCount = 0
+    }
+  }
+
+  WlSessionLock {
+    id: sessionLock
+
+    locked: false
+
+    onSecureStateChanged: {
+      root.logEvent("secure=" + secure)
+      if (secure) {
+        root.pendingSessionLock = false
+        sessionLockStabilizeTimer.stop()
+        pendingSessionLockTimer.stop()
+        // Input that initiated the lock may arrive after secure; only later
+        // discrete activity should start face authentication.
+        root.faceActivityEligibleAt = Date.now() + root.faceActivityDebounce
+        root.startFingerprint()
+      } else {
+        root.resetFaceAuthentication()
+      }
+    }
+
+    onLockStateChanged: {
+      root.logEvent("session-locked=" + locked)
+
+      if (locked) {
+        root.pendingSessionLock = false
+        sessionLockStabilizeTimer.stop()
+        pendingSessionLockTimer.stop()
+      }
+
+      if (!locked && root.lockRequested) {
+        root.lockRequested = false
+        root.pendingSessionLock = false
+        sessionLockStabilizeTimer.stop()
+        pendingSessionLockTimer.stop()
+        root.resetAuthenticationState()
+        root.runWake()
+      }
+    }
+
+    WlSessionLockSurface {
+      id: lockSurface
+      color: Color.background
+
+      LockView {
+        id: lockView
+        anchors.fill: parent
+        backgroundPath: root.backgroundPath
+        backgroundVersion: root.backgroundVersion
+        faceConfigured: root.faceConfigured
+        faceAuthenticating: root.faceAuthenticating
+        faceBlocked: root.faceBlockedReason.length > 0
+        fingerprintConfigured: root.fingerprintConfigured
+        authenticatingPassword: root.authenticatingPassword
+        failureMessage: root.failureMessage
+        failedAttempts: root.failedAttempts
+        inputEnabled: root.lockRequested
+        loadBackground: root.locked
+        passwordText: root.enteredPassword
+        onPasswordTextEdited: function(password) { root.enteredPassword = password }
+        onSubmitPassword: function(password) { root.submitPassword(password) }
+        onClearFailureRequested: root.failureMessage = ""
+        onActivityRequested: root.recordFaceActivity()
+        onPointerMoved: root.handlePointerMoved()
+        onWakeRequested: root.runWake()
+      }
+
+    }
+  }
+
+  PanelWindow {
+    id: previewWindow
+    visible: root.previewVisible
+    anchors { top: true; bottom: true; left: true; right: true }
+    color: "transparent"
+    WlrLayershell.namespace: "omarchy-lock-preview"
+    WlrLayershell.layer: WlrLayer.Overlay
+    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+    exclusionMode: ExclusionMode.Ignore
+
+    LockView {
+      anchors.fill: parent
+      backgroundPath: root.backgroundPath
+      backgroundVersion: root.backgroundVersion
+      faceConfigured: root.faceConfigured
+      fingerprintConfigured: root.fingerprintConfigured
+      authenticatingPassword: false
+      failureMessage: ""
+      failedAttempts: 0
+      inputEnabled: false
+      loadBackground: root.previewVisible
+      passwordText: ""
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      acceptedButtons: Qt.LeftButton | Qt.RightButton
+      onClicked: root.previewVisible = false
+    }
+  }
+
+  PamContext {
+    id: passwordPam
+    config: "omarchy-lock-password"
+    user: root.userName
+
+    onResponseRequiredChanged: root.respondToPasswordPrompt()
+    onPamMessage: root.respondToPasswordPrompt()
+
+    onCompleted: function(result) {
+      root.authenticatingPassword = false
+      root.pendingPassword = ""
+
+      if (!root.lockRequested) return
+      if (result === PamResult.Success) {
+        root.recordPasswordUnlock()
+        root.finishUnlock()
+      } else {
+        root.handlePasswordFailure()
+      }
+    }
+
+    onError: function(error) {
+      root.handlePasswordFailure()
+    }
+  }
+
+  PamContext {
+    id: fingerprintPam
+    config: "omarchy-lock-fingerprint"
+    user: root.userName
+
+    onCompleted: function(result) {
+      root.handleFingerprintFinished(result)
+    }
+
+    onError: function(error) {
+      root.fingerprintAuthenticating = false
+      if (root.lockRequested && root.fingerprintConfigured) fingerprintRetryTimer.restart()
+    }
+  }
+
+  PamContext {
+    id: facePam
+    config: "omarchy-lock-face"
+    user: root.userName
+
+    onPamMessage: {
+      if (String(message).toLowerCase().indexOf(root.faceNoFaceMessage) !== -1) root.faceSawNoFace = true
+    }
+
+    // PamContext follows errors with completed(Error); one handler avoids
+    // consuming the same failed attempt twice.
+    onCompleted: function(result) {
+      root.finishFaceAttempt(result === PamResult.Success, true)
+    }
+  }
+
+  Timer {
+    id: fingerprintRetryTimer
+    interval: 250
+    repeat: false
+    onTriggered: root.startFingerprint()
+  }
+
+  Timer {
+    id: faceRetryTimer
+    interval: root.faceRetryDelay
+    repeat: false
+    onTriggered: root.startFaceAttempt()
+  }
+
+  Process {
+    id: readlinkProc
+    command: ["readlink", "-f", root.currentBackgroundLink]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var next = String(text || "").trim()
+        if (next !== root.backgroundPath) {
+          root.backgroundPath = next
+          root.backgroundVersion += 1
+        }
+      }
+    }
+  }
+
+  Process {
+    id: fingerprintCheckProc
+    command: ["bash", "-c", "if [[ -f /etc/pam.d/omarchy-lock-fingerprint ]] && command -v fprintd-list >/dev/null 2>&1 && fprintd-list \"$USER\" 2>/dev/null | grep -qi finger; then echo yes; else echo no; fi"]
+    stdout: StdioCollector { id: fingerprintCheckStdout; waitForEnd: true }
+    onExited: {
+      root.fingerprintConfigured = String(fingerprintCheckStdout.text || "").trim() === "yes"
+      if (root.lockRequested && root.fingerprintConfigured) root.startFingerprint()
+      else if (!root.fingerprintConfigured && fingerprintPam.active) fingerprintPam.abort()
+    }
+  }
+
+  Process {
+    id: lidCheckProc
+    property int generation: -1
+    command: ["omarchy-hw-laptop-closed"]
+    onExited: function(exitCode) {
+      if (generation !== root.lidObservationGeneration || !root.lockRequested || !root.faceConfigured) return
+      if (exitCode === 0) {
+        root.recordLidClosed()
+      } else if (root.lidClosedDuringLock && sessionLock.secure) {
+        // Clear the flag first so later open polls do nothing.
+        root.lidClosedDuringLock = false
+        root.activateFaceAuthentication()
+      }
+    }
+  }
+
+  Process {
+    id: strandedLockCheckProc
+    command: ["bash", "-c", "omarchy-hyprland-session-locked"]
+    onExited: function(exitCode) {
+      // No output to read the lock off yet.
+      if (exitCode === 2) return
+
+      root.strandedLockResolved = true
+
+      // A lock taken while this was in flight is this shell's own.
+      root.strandedLock = exitCode === 0 && !root.locked && !root.lockRequested
+      root.recoverStrandedLock()
+    }
+  }
+
+  Process {
+    id: wakeProcess
+    command: ["bash", "-c", "omarchy-system-wake"]
+  }
+
+  Process {
+    id: blankProcess
+    command: ["bash", "-c", "omarchy-brightness-keyboard off; omarchy-brightness-display off"]
+  }
+
+  Timer {
+    id: idleBlankTimer
+    interval: 5000
+    repeat: false
+    property double armedAt: 0
+    onTriggered: {
+      // A countdown frozen by suspend fires right after resume, which would
+      // blank the freshly woken unlock screen under the user. Wall-clock time
+      // exposes the gap: take a fresh run-up instead of blanking.
+      if (Date.now() - armedAt > interval + 2000) {
+        root.armBlankTimer()
+        return
+      }
+      // Only a password check in flight should hold the display up. The
+      // fingerprint PAM stays armed for the whole lock, so gating on
+      // `authenticating` here would keep the panel lit until unlock.
+      // A face scan in flight holds it up too, or a 3-4 s scan can blank mid-attempt.
+      if (root.lockRequested && !root.authenticatingPassword && !root.faceAuthenticating) root.runBlank()
+    }
+  }
+
+  Timer {
+    id: lidPollTimer
+    interval: root.lidPollInterval
+    repeat: true
+    running: root.lockRequested && root.faceConfigured
+    triggeredOnStart: true
+    onTriggered: root.startLidCheck()
+  }
+
+  Timer {
+    id: sessionLockStabilizeTimer
+    interval: 500
+    repeat: false
+    onTriggered: root.requestSessionLock()
+  }
+
+  Timer {
+    id: pendingSessionLockTimer
+    interval: 100
+    repeat: true
+    onTriggered: root.requestSessionLock()
+  }
+
+  Timer {
+    id: strandedLockRetryTimer
+    interval: 500
+    repeat: true
+    // Covers the compositor settling; screens coming back re-arm it.
+    readonly property int budget: 20
+    property int remaining: 20
+    running: !root.strandedLockResolved && remaining > 0
+
+    function rearm() {
+      if (!root.strandedLockResolved) remaining = budget
+    }
+
+    onTriggered: {
+      remaining -= 1
+      root.checkStrandedLock()
+    }
+  }
+
+  Connections {
+    target: Quickshell
+    function onScreensChanged() {
+      root.requestSessionLock()
+
+      // A monitor still coming up has no workspace, so cannot answer yet.
+      strandedLockRetryTimer.rearm()
+      root.checkStrandedLock()
+    }
+  }
+
+  onFaceAuthenticatingChanged: {
+    if (!lockRequested) return
+    if (faceAuthenticating) idleBlankTimer.stop()
+    else armBlankTimer()
+  }
+
+  onAuthenticatingPasswordChanged: {
+    if (!lockRequested) return
+    if (authenticatingPassword) idleBlankTimer.stop()
+    else armBlankTimer()
+  }
+
+  FileView {
+    path: "/etc/pam.d/omarchy-lock-password"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.passwordPamConfigured = true
+    onLoadFailed: root.passwordPamConfigured = false
+    onFileChanged: reload()
+  }
+
+  FileView {
+    id: faceStateFile
+    path: root.faceStatePath
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.loadFaceState(text())
+    onLoadFailed: root.loadFaceState("")
+  }
+
+  Process {
+    id: faceStateDirProc
+    command: ["mkdir", "-p", root.faceStateDir]
+  }
+
+  // The session's login time, in microseconds since the epoch.
+  Process {
+    id: sessionStartProc
+    command: ["busctl", "--json=short", "get-property", "org.freedesktop.login1", "/org/freedesktop/login1/session/auto", "org.freedesktop.login1.Session", "Timestamp"]
+    stdout: StdioCollector { id: sessionStartStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      try {
+        var usec = Number(JSON.parse(String(sessionStartStdout.text || "")).data)
+        if (exitCode === 0 && usec > 0) root.sessionStartedAt = Math.floor(usec / 1000)
+      } catch (e) {}
+      root.refreshFaceBlock()
+    }
+  }
+
+  FileView {
+    path: "/etc/pam.d/omarchy-lock-face"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.faceConfigured = true
+    onLoadFailed: root.faceConfigured = false
+    onFileChanged: reload()
+  }
+
+  onFaceConfiguredChanged: {
+    if (!faceConfigured) {
+      resetFaceAuthentication()
+    } else if (lockRequested) {
+      if (sessionLock.secure) faceActivityEligibleAt = Date.now()
+    }
+  }
+
+  // No lock before PAM is known good. An answer from before then may be stale --
+  // the failsafe can be cleared from a TTY -- so re-ask rather than act on it.
+  onPasswordPamConfiguredChanged: {
+    if (!passwordPamConfigured) return
+
+    strandedLock = false
+    strandedLockResolved = false
+    strandedLockRetryTimer.rearm()
+    checkStrandedLock()
+  }
+
+  Component.onCompleted: {
+    refreshBackground()
+    refreshFingerprintStatus()
+    checkStrandedLock()
+    faceStateDirProc.running = true
+    sessionStartProc.running = true
+  }
+
+  IpcHandler {
+    target: "lock"
+
+    function lock(): string {
+      if (root.locked) {
+        // A face attempt must not continue while the laptop sleeps. Lid close
+        // repeats this request, so abort the attempt and record the closed lid
+        // for a fresh attempt after it reopens.
+        root.stopFaceAuthentication()
+        root.startLidCheck()
+        return "ok"
+      }
+      if (!root.passwordPamConfigured) return "missing-pam"
+      if (!root.beginLock()) return "failed"
+      return "ok"
+    }
+
+    function isLocked(): string {
+      return root.locked ? "true" : "false"
+    }
+
+    function status(): string {
+      return JSON.stringify({
+        locked: root.locked,
+        requested: root.lockRequested,
+        pending: root.pendingSessionLock,
+        sessionLocked: sessionLock.locked,
+        secure: sessionLock.secure,
+        realScreens: root.realScreenCount(),
+        passwordPam: root.passwordPamConfigured,
+        fingerprint: root.fingerprintConfigured,
+        face: root.faceConfigured,
+        faceAuthenticating: root.faceAuthenticating,
+        faceAttempts: root.faceAttemptCount,
+        impl: "reidenxerx.penguid",
+        faceBlocked: root.faceBlockedReason,
+        faceFailures: root.faceFailures,
+        lastPasswordAt: root.lastPasswordAt,
+        sessionStartedAt: root.sessionStartedAt,
+        authenticating: root.authenticating,
+        lastEvent: root.lastEvent,
+        lastEventAt: root.lastEventAt
+      })
+    }
+
+    function preview(): string {
+      root.refreshBackground()
+      root.refreshFingerprintStatus()
+      root.previewVisible = true
+      return "ok"
+    }
+
+    function hidePreview(): string {
+      root.previewVisible = false
+      return "ok"
+    }
+  }
+}

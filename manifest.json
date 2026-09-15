@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "reidenxerx.penguid",
+  "name": "PenguID",
+  "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
+  "author": "ReidenXerx",
+  "description": "Face unlock for Omarchy: a lock screen that recognizes you with the IR camera (irlume), next to the password and fingerprint lanes.",
+  "omarchy": {
+    "clonedFrom": "omarchy.lock"
+  },
+  "kinds": [
+    "service"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml"
+  }
+}

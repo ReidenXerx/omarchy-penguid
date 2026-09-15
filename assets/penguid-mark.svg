@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="PenguID mark: a line-drawn penguin inside scan corners">
+  <style>
+    .ink { stroke: #16191D; }
+    .accent { stroke: #9A5600; }
+    @media (prefers-color-scheme: dark) {
+      .ink { stroke: #E6E9E5; }
+      .accent { stroke: #F2B441; }
+    }
+  </style>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <g class="ink" stroke-width="6">
+      <path d="M8 34V22Q8 8 22 8H34"/>
+      <path d="M86 8H98Q112 8 112 22V34"/>
+      <path d="M112 86V98Q112 112 98 112H86"/>
+      <path d="M34 112H22Q8 112 8 98V86"/>
+    </g>
+    <g transform="translate(60 62) scale(.9) translate(-60 -62)">
+      <g class="ink" stroke-width="5">
+        <path d="M60 24C70 24 77 31 77 42C77 52 84 64 84 76C84 88 73 94 60 94C47 94 36 88 36 76C36 64 43 52 43 42C43 31 50 24 60 24Z"/>
+        <path d="M50 56C45 65 45 79 51 85C55 89 65 89 69 85C75 79 75 65 70 56"/>
+      </g>
+      <g class="ink" stroke-width="5.6">
+        <path d="M53 35V40"/>
+        <path d="M67 35V40"/>
+      </g>
+      <g class="accent" stroke-width="5">
+        <path d="M55 46L60 50.5L65 46"/>
+        <path d="M48 100H56"/>
+        <path d="M64 100H72"/>
+      </g>
+    </g>
+  </g>
+</svg>
