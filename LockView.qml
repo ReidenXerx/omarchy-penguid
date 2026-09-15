@@ -14,6 +14,8 @@ Item {
   property bool faceAuthenticating: false
   // Set when the password rules pause face unlock (48 hours without the password, or 5 failed tries).
   property bool faceBlocked: false
+  // Set after irlume saw a face and refused it, until the next attempt starts.
+  property bool faceRefused: false
   property bool fingerprintConfigured: false
   property bool authenticatingPassword: false
   property string failureMessage: ""
@@ -217,28 +219,21 @@ Item {
         elide: Text.ElideRight
       }
 
-      Text {
+      // The PenguID mark instead of a font glyph: the corners breathe while irlume looks, the eyes go flat after a
+      // refusal, and the whole mark dims while the password rules pause face unlock.
+      PenguinMark {
         id: faceIcon
         objectName: "faceIndicator"
         anchors.left: parent.left
-        anchors.leftMargin: inputField.borderLeft + 18
+        anchors.leftMargin: inputField.borderLeft + 14
         anchors.verticalCenter: parent.verticalCenter
         visible: root.faceConfigured
-        text: "󰱻"
-        color: root.faceAuthenticating ? Color.lock.text : (root.faceBlocked ? Qt.alpha(Color.lock.placeholder, 0.4) : Color.lock.placeholder)
-        font.family: Style.font.family
-        font.pixelSize: Math.round(root.fieldFontSize * 1.1)
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
-
-        // Pulses while irlume is looking; alwaysRunToEnd lands it back at full opacity.
-        SequentialAnimation on opacity {
-          running: root.faceAuthenticating
-          loops: Animation.Infinite
-          alwaysRunToEnd: true
-          NumberAnimation { from: 1; to: 0.35; duration: 600; easing.type: Easing.InOutQuad }
-          NumberAnimation { from: 0.35; to: 1; duration: 600; easing.type: Easing.InOutQuad }
-        }
+        width: Math.round(root.fieldFontSize * 1.6)
+        height: width
+        implicitWidth: width
+        color: root.faceAuthenticating ? Color.lock.text : (root.faceRefused ? Color.lock.textError : Color.lock.placeholder)
+        accentColor: color
+        mood: root.faceAuthenticating ? "looking" : (root.faceBlocked ? "paused" : (root.faceRefused ? "refused" : "ready"))
       }
 
       // Fingerprint hint pinned inside the field's right edge when a sensor is

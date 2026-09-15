@@ -64,6 +64,7 @@ Item {
   property double lastPasswordAt: 0
   property int faceFailures: 0
   property bool faceSawNoFace: false
+  property bool faceRefused: false
   property string faceBlockedReason: ""
 
   function realScreenCount() {
@@ -154,6 +155,7 @@ Item {
 
   function resetFaceAuthentication() {
     stopFaceAuthentication()
+    faceRefused = false
     lidObservationGeneration += 1
     faceActivityEligibleAt = 0
     lidClosedDuringLock = false
@@ -364,6 +366,7 @@ Item {
     faceAttemptCount += 1
     faceAuthenticating = true
     faceSawNoFace = false
+    faceRefused = false
     logEvent("face-attempt " + faceAttemptCount)
 
     if (!facePam.start()) finishFaceAttempt(false, false)
@@ -383,6 +386,7 @@ Item {
       }
     } else if (counted && !noFace) {
       faceFailures += 1
+      faceRefused = true
       saveFaceState()
     }
 
@@ -460,6 +464,7 @@ Item {
         faceConfigured: root.faceConfigured
         faceAuthenticating: root.faceAuthenticating
         faceBlocked: root.faceBlockedReason.length > 0
+        faceRefused: root.faceRefused
         fingerprintConfigured: root.fingerprintConfigured
         authenticatingPassword: root.authenticatingPassword
         failureMessage: root.failureMessage
