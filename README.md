@@ -1,6 +1,6 @@
 <h1 align="center"><img src="assets/penguid-wordmark.svg" alt="PenguID" width="420"></h1>
 
-Face unlock for Omarchy. Open the lid, look at the screen, and you're in: a lock screen that recognizes you with the IR camera, plus face for sudo and polkit. The password always works, and it stays the first unlock after boot. The plan lives at https://claude.ai/code/artifact/462ec7f8-0a86-4c3c-9462-faae5548e959.
+Face unlock for Omarchy. Open the lid, look at the screen, and you're in: a lock screen that recognizes you with the IR camera, plus face for sudo and polkit. The password always works, and it stays the first unlock after boot. Project page: https://reidenxerx.github.io/omarchy-penguid/
 
 It replaces the built-in lock screen (`clonedFrom: omarchy.lock`) and keeps its password and fingerprint lanes unchanged. Next to them it runs a third PAM service, `omarchy-lock-face`:
 
@@ -65,7 +65,7 @@ Only one polkit agent can register per session. If another one starts first, suc
 
 ## Requirements
 
-- [irlume](https://github.com/archledger/irlume) installed, with your face enrolled (`irlume enroll`). On this laptop it runs in IR-only mode (`sudo irlume auth sensor ir-only --yes`), which takes about 3.6 s per attempt.
+- [irlume](https://github.com/archledger/irlume) installed, with your face enrolled (`irlume enroll`). PenguID was developed with irlume's IR-only mode (`sudo irlume auth sensor ir-only --yes`), where an attempt takes about 3.6 s.
 - `/etc/pam.d/omarchy-lock-face`. The face indicator and the lane only appear while this file exists:
 
 ```
@@ -104,3 +104,7 @@ python3 tests/pam-gate-test.py
 ## Credits
 
 See NOTICE. The lock screen and the polkit dialog are Omarchy's (MIT). The face lane comes from Omarchy PR #6863 by @mateuszkowalczyk. Face authentication is done by irlume. This plugin is GPL-3.0-or-later.
+
+## Support
+
+Like PenguID? Support its development: https://donatello.to/DuduPhudu
