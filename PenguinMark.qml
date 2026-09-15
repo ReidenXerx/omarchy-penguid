@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The PenguID mark: a line-drawn penguin inside scan corners, drawn in a 120 x 120 box and scaled to fit.
 // mood: "ready" | "looking" (corners breathe) | "granted" (the penguin winks) | "refused" (flat eyes) | "paused" (dimmed)
+// tinted: colour by mood as in the design (amber while looking, green on a match, red after a refusal); color otherwise.
 // mini: the bar-size variant, a solid silhouette with heavier corners, because detail vanishes at 16 px.
 import QtQuick
 import QtQuick.Shapes
@@ -12,10 +13,23 @@ Item {
   property color accentColor: color
   property string mood: "ready"
   property bool mini: false
+  property bool tinted: false
+
+  // The design's state colours for dark surfaces, such as the blurred lock screen.
+  readonly property color lookingColor: "#F2B441"
+  readonly property color grantedColor: "#5CC08A"
+  readonly property color refusedColor: "#F0877D"
+  readonly property bool moodTinted: tinted && (mood === "looking" || mood === "granted" || mood === "refused")
+  readonly property color moodColor: mood === "looking" ? lookingColor : (mood === "granted" ? grantedColor : refusedColor)
+  property color lineColor: moodTinted ? moodColor : color
+  property color detailColor: moodTinted ? moodColor : accentColor
+  Behavior on lineColor { ColorAnimation { duration: 180 } }
+  Behavior on detailColor { ColorAnimation { duration: 180 } }
 
   implicitWidth: 24
   implicitHeight: 24
   opacity: mood === "paused" ? 0.45 : 1
+  Behavior on opacity { NumberAnimation { duration: 180 } }
 
   readonly property string framePath: "M8 34V22Q8 8 22 8H34M86 8H98Q112 8 112 22V34M112 86V98Q112 112 98 112H86M34 112H22Q8 112 8 98V86"
   // The full-size penguin is scaled by 0.9 around (60, 62); these paths carry that scale already.
@@ -27,87 +41,101 @@ Item {
   readonly property string beakPath: "M55.5 47.6L60 51.65L64.5 47.6"
   readonly property string feetPath: "M49.2 96.2H56.4M63.6 96.2H70.8"
 
+  onMoodChanged: if (mood === "granted") grantPop.restart()
+
+  // A match gives the mark a small bounce.
+  SequentialAnimation {
+    id: grantPop
+    NumberAnimation { target: popLayer; property: "scale"; to: 1.1; duration: 110; easing.type: Easing.OutQuad }
+    NumberAnimation { target: popLayer; property: "scale"; to: 1; duration: 220; easing.type: Easing.OutBack }
+  }
+
   Item {
-    id: canvas
-    width: 120
-    height: 120
-    anchors.centerIn: parent
-    scale: Math.min(mark.width, mark.height) / 120
+    id: popLayer
+    anchors.fill: parent
 
     Item {
-      id: frameLayer
-      anchors.fill: parent
+      id: canvas
+      width: 120
+      height: 120
+      anchors.centerIn: parent
+      scale: Math.min(mark.width, mark.height) / 120
 
+      Item {
+        id: frameLayer
+        anchors.fill: parent
+
+        Shape {
+          anchors.fill: parent
+          preferredRendererType: Shape.CurveRenderer
+          antialiasing: true
+
+          ShapePath {
+            strokeColor: mark.lineColor
+            strokeWidth: mark.mini ? 12 : 6
+            fillColor: "transparent"
+            capStyle: ShapePath.RoundCap
+            joinStyle: ShapePath.RoundJoin
+            PathSvg { path: mark.framePath }
+          }
+        }
+
+        SequentialAnimation on scale {
+          running: mark.mood === "looking"
+          loops: Animation.Infinite
+          alwaysRunToEnd: true
+          NumberAnimation { from: 1; to: 0.9; duration: 600; easing.type: Easing.InOutQuad }
+          NumberAnimation { from: 0.9; to: 1; duration: 600; easing.type: Easing.InOutQuad }
+        }
+      }
+
+      // The bar variant: one solid shape reads as a penguin at icon size where lines would not.
       Shape {
         anchors.fill: parent
+        visible: mark.mini
         preferredRendererType: Shape.CurveRenderer
         antialiasing: true
 
         ShapePath {
-          strokeColor: mark.color
-          strokeWidth: mark.mini ? 12 : 6
-          fillColor: "transparent"
-          capStyle: ShapePath.RoundCap
-          joinStyle: ShapePath.RoundJoin
-          PathSvg { path: mark.framePath }
+          strokeColor: "transparent"
+          strokeWidth: 0
+          fillColor: mark.lineColor
+          PathSvg { path: mark.miniBodyPath }
         }
       }
 
-      SequentialAnimation on scale {
-        running: mark.mood === "looking"
-        loops: Animation.Infinite
-        alwaysRunToEnd: true
-        NumberAnimation { from: 1; to: 0.9; duration: 600; easing.type: Easing.InOutQuad }
-        NumberAnimation { from: 0.9; to: 1; duration: 600; easing.type: Easing.InOutQuad }
-      }
-    }
+      Shape {
+        anchors.fill: parent
+        visible: !mark.mini
+        preferredRendererType: Shape.CurveRenderer
+        antialiasing: true
 
-    // The bar variant: one solid shape reads as a penguin at icon size where lines would not.
-    Shape {
-      anchors.fill: parent
-      visible: mark.mini
-      preferredRendererType: Shape.CurveRenderer
-      antialiasing: true
+        ShapePath {
+          strokeColor: mark.lineColor
+          strokeWidth: 4.5
+          fillColor: "transparent"
+          capStyle: ShapePath.RoundCap
+          joinStyle: ShapePath.RoundJoin
+          PathSvg { path: mark.bodyPath + mark.bellyPath }
+        }
 
-      ShapePath {
-        strokeColor: "transparent"
-        strokeWidth: 0
-        fillColor: mark.color
-        PathSvg { path: mark.miniBodyPath }
-      }
-    }
+        ShapePath {
+          strokeColor: mark.lineColor
+          strokeWidth: 5
+          fillColor: "transparent"
+          capStyle: ShapePath.RoundCap
+          joinStyle: ShapePath.RoundJoin
+          PathSvg { path: mark.eyesPath }
+        }
 
-    Shape {
-      anchors.fill: parent
-      visible: !mark.mini
-      preferredRendererType: Shape.CurveRenderer
-      antialiasing: true
-
-      ShapePath {
-        strokeColor: mark.color
-        strokeWidth: 4.5
-        fillColor: "transparent"
-        capStyle: ShapePath.RoundCap
-        joinStyle: ShapePath.RoundJoin
-        PathSvg { path: mark.bodyPath + mark.bellyPath }
-      }
-
-      ShapePath {
-        strokeColor: mark.color
-        strokeWidth: 5
-        fillColor: "transparent"
-        capStyle: ShapePath.RoundCap
-        joinStyle: ShapePath.RoundJoin
-        PathSvg { path: mark.eyesPath }
-      }
-
-      ShapePath {
-        strokeColor: mark.accentColor
-        strokeWidth: 4.5
-        fillColor: "transparent"
-        capStyle: ShapePath.RoundCap
-        joinStyle: ShapePath.RoundJoin
-        PathSvg { path: mark.beakPath + mark.feetPath }
+        ShapePath {
+          strokeColor: mark.detailColor
+          strokeWidth: 4.5
+          fillColor: "transparent"
+          capStyle: ShapePath.RoundCap
+          joinStyle: ShapePath.RoundJoin
+          PathSvg { path: mark.beakPath + mark.feetPath }
+        }
       }
     }
   }

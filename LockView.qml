@@ -16,6 +16,8 @@ Item {
   property bool faceBlocked: false
   // Set after irlume saw a face and refused it, until the next attempt starts.
   property bool faceRefused: false
+  // Set for the moment between a face match and the unlock, so the green wink shows.
+  property bool faceGranted: false
   property bool fingerprintConfigured: false
   property bool authenticatingPassword: false
   property string failureMessage: ""
@@ -34,12 +36,9 @@ Item {
   readonly property int fieldFontSize: Math.round(Style.font.heading * 1.125)
   readonly property int passwordDotFontSize: Math.round(Style.font.heading * 1.33)
   readonly property int passwordDotLetterSpacing: Math.round(Style.font.heading * 0.19)
-  // Reserve the widest configured biometric icon plus a gap on both sides, so
-  // centered text stays clear when either or both indicators are visible.
-  readonly property real biometricReserve: Math.round(Math.max(
-    faceConfigured ? faceIcon.implicitWidth + 12 : 0,
-    fingerprintConfigured ? fingerprintIcon.implicitWidth + 12 : 0
-  ))
+  // Reserve the fingerprint icon plus a gap on both sides, so centered text stays clear of it. The face mark sits
+  // above the field instead.
+  readonly property real biometricReserve: fingerprintConfigured ? Math.round(fingerprintIcon.implicitWidth + 12) : 0
   // Shrink the dots to fit once the password outgrows the field, so every
   // keystroke stays visible — otherwise long passwords clip with no feedback.
   readonly property real passwordDotScale: dotMetrics.advanceWidth > 0
@@ -142,6 +141,28 @@ Item {
       }
     }
 
+    // The PenguID mark above the field, coloured by state as in the design: waiting, amber corners that breathe while
+    // irlume looks, a green wink on a match, red flat eyes after a refusal, dimmed while the password rules pause face.
+    PenguinMark {
+      id: faceMark
+      objectName: "faceIndicator"
+      anchors.horizontalCenter: inputField.horizontalCenter
+      anchors.bottom: inputField.top
+      anchors.bottomMargin: Math.round(root.fieldHeight * 0.4)
+      width: Math.round(root.fieldHeight * 1.3)
+      height: width
+      visible: root.faceConfigured
+      tinted: true
+      color: Color.lock.text
+      mood: root.faceGranted ? "granted" : (root.faceAuthenticating ? "looking" : (root.faceBlocked ? "paused" : (root.faceRefused ? "refused" : "ready")))
+      layer.enabled: true
+      layer.effect: MultiEffect {
+        shadowEnabled: true
+        shadowColor: Qt.rgba(0, 0, 0, 0.6)
+        shadowBlur: 0.6
+      }
+    }
+
     BorderSurface {
       id: inputField
       width: root.fieldWidth
@@ -217,23 +238,6 @@ Item {
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideRight
-      }
-
-      // The PenguID mark instead of a font glyph: the corners breathe while irlume looks, the eyes go flat after a
-      // refusal, and the whole mark dims while the password rules pause face unlock.
-      PenguinMark {
-        id: faceIcon
-        objectName: "faceIndicator"
-        anchors.left: parent.left
-        anchors.leftMargin: inputField.borderLeft + 14
-        anchors.verticalCenter: parent.verticalCenter
-        visible: root.faceConfigured
-        width: Math.round(root.fieldFontSize * 1.6)
-        height: width
-        implicitWidth: width
-        color: root.faceAuthenticating ? Color.lock.text : (root.faceRefused ? Color.lock.textError : Color.lock.placeholder)
-        accentColor: color
-        mood: root.faceAuthenticating ? "looking" : (root.faceBlocked ? "paused" : (root.faceRefused ? "refused" : "ready"))
       }
 
       // Fingerprint hint pinned inside the field's right edge when a sensor is

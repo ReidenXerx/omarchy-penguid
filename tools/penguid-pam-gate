@@ -1,0 +1,214 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""PenguID's password rules for sudo and polkit, run by pam_exec.
+
+tools/privileged-pam.sh installs this as /usr/local/lib/penguid/pam-gate and wires it on both sides of irlume's line:
+
+  check   before the face line. Exit 0 lets face run; anything else skips it, including a crash or a missing file.
+          While face is paused it prints why, and pam_exec passes that on above the password prompt.
+  record  after the password stack, which only reaches it once a password was accepted. Like a password on the
+          lock screen or in the panel, it turns face back on for the next 48 hours.
+
+The rules are the lock screen's (faceBlockReason in Service.qml): face pauses 48 hours after the later of the last
+password use and the login of the user's graphical session, or after 5 refused faces in a row. Both counters live in
+~/.local/state/penguid/state.json.
+
+pam_exec runs this as root, with an environment the user can influence. So it takes only PAM_USER from the
+environment, looks the home directory up in the password database, and becomes that user before touching any file.
+"""
+
+import json
+import os
+import pwd
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+MAX_AGE_MS = 48 * 3600 * 1000
+FAILURE_LIMIT = 5
+STATE_CAP = 64 * 1024
+BUSCTL = "/usr/bin/busctl"
+BUS_DEADLINE = 2
+MESSAGES = {
+    "48h": "Face unlock is paused: 48 hours without your password. Type your password to turn it back on.",
+    "failures": "Face unlock is paused after 5 refused faces. Type your password to turn it back on.",
+    "unknown": "Face unlock is paused until you type your password.",
+}
+
+
+def state_path(home):
+    return os.path.join(home, ".local", "state", "penguid", "state.json")
+
+
+def number(value):
+    """A finite JSON number, or 0."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return value if value == value and abs(value) != float("inf") else 0
+
+
+def read_state(path):
+    """(lastPasswordAt in ms, faceFailures). A missing or unreadable file reads as zeros, as on the lock screen."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return 0, 0
+    chunks, size = [], 0
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return 0, 0
+        while size <= STATE_CAP:
+            chunk = os.read(fd, STATE_CAP + 1 - size)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+    except OSError:
+        return 0, 0
+    finally:
+        os.close(fd)
+    if size > STATE_CAP:
+        return 0, 0
+    try:
+        doc = json.loads(b"".join(chunks).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return 0, 0
+    if not isinstance(doc, dict):
+        return 0, 0
+    return number(doc.get("lastPasswordAt")), max(0, int(number(doc.get("faceFailures"))))
+
+
+def logind_property(path, interface, name):
+    """One logind property as decoded JSON data, or None."""
+    try:
+        result = subprocess.run(
+            [BUSCTL, "--json=short", "get-property", "org.freedesktop.login1", path, interface, name],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=BUS_DEADLINE, env={"LC_ALL": "C"}, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout).get("data")
+    except (ValueError, AttributeError):
+        return None
+
+
+def session_started_ms(uid):
+    """Login time of the user's graphical session in ms, or 0 when there is none or logind doesn't answer."""
+    display = logind_property("/org/freedesktop/login1/user/_%d" % uid, "org.freedesktop.login1.User", "Display")
+    if not isinstance(display, list) or len(display) != 2 or not isinstance(display[1], str):
+        return 0
+    if not display[1].startswith("/org/freedesktop/login1/session/"):
+        return 0
+    stamp = logind_property(display[1], "org.freedesktop.login1.Session", "Timestamp")
+    if isinstance(stamp, bool) or not isinstance(stamp, int) or stamp <= 0:
+        return 0
+    return stamp // 1000
+
+
+def block_reason(last_password_ms, failures, session_ms, now_ms):
+    """Why face is paused, or "" when it may run."""
+    if failures >= FAILURE_LIMIT:
+        return "failures"
+    last = max(last_password_ms, session_ms)
+    if last <= 0:
+        return "unknown"
+    if now_ms - last > MAX_AGE_MS:
+        return "48h"
+    return ""
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def pam_user():
+    """The user PAM is authenticating, unless it is unknown or root."""
+    name = os.environ.get("PAM_USER", "")
+    if not name:
+        return None
+    try:
+        user = pwd.getpwnam(name)
+    except KeyError:
+        return None
+    return user if user.pw_uid != 0 else None
+
+
+def become(user):
+    """Switch to USER when running as root; anyone else may only act for themselves."""
+    if os.geteuid() == 0:
+        os.setgroups([])
+        os.setgid(user.pw_gid)
+        os.setuid(user.pw_uid)
+    if os.getuid() != user.pw_uid or os.geteuid() != user.pw_uid:
+        raise PermissionError("not running as " + user.pw_name)
+
+
+def write_state(path, stamp_ms):
+    """Atomically note a password use in the lock screen's format, which also clears the refusal count."""
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    text = json.dumps({"version": 1, "lastPasswordAt": stamp_ms, "faceFailures": 0}, indent=2) + "\n"
+    fd, temporary = tempfile.mkstemp(prefix=".state.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def check():
+    user = pam_user()
+    if user is None:
+        return 1
+    try:
+        become(user)
+    except OSError:
+        return 1
+    last, failures = read_state(state_path(user.pw_dir))
+    reason = block_reason(last, failures, session_started_ms(user.pw_uid), now_ms())
+    if reason:
+        print(MESSAGES[reason], flush=True)
+        return 1
+    return 0
+
+
+def record():
+    user = pam_user()
+    if user is None:
+        return 0
+    try:
+        become(user)
+        write_state(state_path(user.pw_dir), now_ms())
+    except OSError:
+        pass
+    return 0
+
+
+def main(argv):
+    os.umask(0o077)
+    mode = argv[1] if len(argv) == 2 else ""
+    if mode == "check":
+        return check()
+    if mode == "record":
+        return record()
+    print("usage: pam-gate check|record", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv))
+    except Exception:
+        # A crash must not let face through: for check, a non-zero exit skips the face line.
+        sys.exit(1)

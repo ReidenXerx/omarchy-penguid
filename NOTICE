@@ -1,5 +1,9 @@
-PenguID: an Omarchy lock screen plugin with a face unlock lane.
+PenguID: face unlock for Omarchy, as a lock screen plugin and a polkit dialog plugin.
 Copyright (C) 2026 ReidenXerx. Licensed under GPL-3.0-or-later; see LICENSE.
+
+The polkit dialog (reidenxerx.penguid-polkit, in polkit/) is a clone of Omarchy's polkit agent plugin
+(shell/plugins/polkit, Omarchy 4.0.3), under the same MIT License. PenguID added its face lane: the Enter
+prompt handling, the PenguID mark and PAM's notes under the card.
 
 This plugin is a clone of Omarchy's lock screen plugin (shell/plugins/lock, Omarchy 4.0.3),
 Copyright (c) David Heinemeier Hansson, released under the MIT License (reproduced below).

@@ -120,6 +120,7 @@ Panel {
       onStreamFinished: {
         var result = Model.testResult(text, Date.now() - testProc.startedAt)
         root.testState = result.state
+        root.tellHud(result.state)
         root.testText = result.text
         testClear.restart()
       }
@@ -127,6 +128,7 @@ Panel {
     onStarted: {
       startedAt = Date.now()
       root.testState = "looking"
+      root.tellHud("looking")
       root.testText = "Look at the camera" + root.ellipsis
       testWatchdog.restart()
     }
@@ -147,6 +149,11 @@ Panel {
       root.testState = ""
       root.testText = ""
     }
+  }
+
+  // The face HUD shows the test above everything, like any other face attempt.
+  function tellHud(state) {
+    Quickshell.execDetached(["omarchy-shell", "penguid", "hud", state])
   }
 
   function runTest() {
@@ -319,6 +326,7 @@ Panel {
             Layout.preferredHeight: Style.space(46)
             color: root.fg
             accentColor: Color.accent
+            tinted: true
             mood: root.headerMood
           }
 

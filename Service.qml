@@ -31,6 +31,10 @@ Item {
   property bool lidClosedDuringLock: false
   property int lidObservationGeneration: 0
   property bool previewVisible: false
+  // "" for the live state, or the mood the preview shows: ready, looking, granted, refused or paused.
+  property string previewFaceMood: ""
+  // A face matched; the unlock waits a moment so the lock screen can show the green wink.
+  property bool faceGranted: false
   property string enteredPassword: ""
   property string pendingPassword: ""
   property string failureMessage: ""
@@ -162,6 +166,7 @@ Item {
   }
 
   function resetAuthenticationState() {
+    faceGranted = false
     enteredPassword = ""
     pendingPassword = ""
     failureMessage = ""
@@ -396,7 +401,8 @@ Item {
     }
     if (succeeded) {
       faceAttemptCount = 0
-      finishUnlock()
+      faceGranted = true
+      faceGrantHoldTimer.restart()
       return
     }
     if (refreshFaceBlock()) {
@@ -410,6 +416,51 @@ Item {
       // Three failures stop here; a later key, click, or touch may try again.
       logEvent("face-stop: attempt-limit")
       faceAttemptCount = 0
+    }
+  }
+
+  // ---------------------------------------------------------------- face HUD
+  // sudo and polkit (through pam_penguid.so) and the panel's face test report face attempts on a socket in a private
+  // runtime folder; the HUD shows them above every window.
+  readonly property string hudDir: Quickshell.env("XDG_RUNTIME_DIR") ? Quickshell.env("XDG_RUNTIME_DIR") + "/penguid" : ""
+
+  function handleHudLine(line) {
+    var parts = String(line || "").trim().split(/\s+/)
+    if (!parts[0]) return
+    console.log("penguid hud: " + parts.join(" "))
+    faceHud.show(parts[0])
+  }
+
+  FaceHud {
+    id: faceHud
+    suppressed: root.locked
+  }
+
+  Process {
+    id: hudDirProc
+    command: ["sh", "-c", "mkdir -p -m 700 \"$1\" && chmod 700 \"$1\" && rm -f \"$1/hud.sock\"", "sh", root.hudDir]
+    running: root.hudDir !== ""
+    onExited: function(exitCode) { if (exitCode === 0) hudServer.active = true }
+  }
+
+  SocketServer {
+    id: hudServer
+    active: false
+    path: root.hudDir + "/hud.sock"
+    handler: Socket {
+      parser: SplitParser {
+        onRead: function(line) { root.handleHudLine(line) }
+      }
+    }
+  }
+
+  IpcHandler {
+    target: "penguid"
+
+    // looking, granted, refused or hide: shows the face HUD the way sudo and polkit do.
+    function hud(state: string): string {
+      root.handleHudLine(state + " ipc")
+      return "ok"
     }
   }
 
@@ -465,6 +516,7 @@ Item {
         faceAuthenticating: root.faceAuthenticating
         faceBlocked: root.faceBlockedReason.length > 0
         faceRefused: root.faceRefused
+        faceGranted: root.faceGranted
         fingerprintConfigured: root.fingerprintConfigured
         authenticatingPassword: root.authenticatingPassword
         failureMessage: root.failureMessage
@@ -498,6 +550,10 @@ Item {
       backgroundPath: root.backgroundPath
       backgroundVersion: root.backgroundVersion
       faceConfigured: root.faceConfigured
+      faceAuthenticating: root.previewFaceMood === "looking"
+      faceGranted: root.previewFaceMood === "granted"
+      faceRefused: root.previewFaceMood === "refused"
+      faceBlocked: root.previewFaceMood === "paused"
       fingerprintConfigured: root.fingerprintConfigured
       authenticatingPassword: false
       failureMessage: ""
@@ -583,6 +639,14 @@ Item {
     interval: root.faceRetryDelay
     repeat: false
     onTriggered: root.startFaceAttempt()
+  }
+
+  // Long enough to see the wink, short enough not to feel like a wait.
+  Timer {
+    id: faceGrantHoldTimer
+    interval: 450
+    repeat: false
+    onTriggered: root.finishUnlock()
   }
 
   Process {
@@ -868,7 +932,15 @@ Item {
 
     function hidePreview(): string {
       root.previewVisible = false
+      root.previewFaceMood = ""
       return "ok"
+    }
+
+    // The preview with the face mark in one mood, to check the design: ready, looking, granted, refused or paused.
+    function previewFace(mood: string): string {
+      if (["ready", "looking", "granted", "refused", "paused"].indexOf(mood) === -1) return "unknown mood"
+      root.previewFaceMood = mood
+      return preview()
     }
   }
 }
