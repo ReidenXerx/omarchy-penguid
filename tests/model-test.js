@@ -111,4 +111,24 @@ test("terminal commands are quoted argument by argument", () => {
   assert.strictEqual(M.actionCommand("add-scans", null, "/p")[4], "Face Profile 1")
 })
 
+test("the paused gate asks for the password, with the reason", () => {
+  const now = Date.UTC(2026, 8, 15, 12, 0, 0)
+  const paused = M.view(healthy({ lock: { ours: true, face: true, blocked: "48h", failures: 0, lastPasswordAt: 0, sessionStartedAt: now - 70 * 3600e3 } }), true, now)
+  assert.strictEqual(paused.gateNeeded, true)
+  assert.ok(paused.gateText.includes("48 hours"))
+  assert.strictEqual(paused.dueText, "")
+  const refused = M.view(healthy({ lock: { ours: true, face: true, blocked: "failures" } }), true, now)
+  assert.ok(refused.gateText.startsWith("Five faces in a row"))
+  assert.strictEqual(M.view(healthy({ lock: { ours: false, face: false, blocked: "48h" } }), true, now).gateNeeded, false)
+})
+
+test("while face is on, the panel says when the password is due", () => {
+  const now = Date.UTC(2026, 8, 15, 12, 0, 0)
+  const on = lock => M.view(healthy({ lock: Object.assign({ ours: true, face: true, blocked: "", failures: 0 }, lock) }), true, now)
+  assert.strictEqual(on({ lastPasswordAt: now - 17 * 3600e3, sessionStartedAt: now - 60 * 3600e3 }).dueText, "Password needed again in 31 h")
+  assert.strictEqual(on({ lastPasswordAt: now - 47.5 * 3600e3, sessionStartedAt: 0 }).dueText, "Password needed again in 30 min")
+  assert.strictEqual(on({ lastPasswordAt: 0, sessionStartedAt: 0 }).dueText, "")
+  assert.strictEqual(on({ lastPasswordAt: now - 60 * 3600e3 }).gateNeeded, false)
+})
+
 console.log("model tests: " + passed + " passed")

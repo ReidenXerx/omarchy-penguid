@@ -26,9 +26,9 @@ function blockedText(reason) {
 
 // Rows for the panel, the tooltip summary, whether the bar shows its dot, and the header mood.
 // Only things face unlock needs you for light the dot; standing warnings such as Secure Boot do not.
-function view(status, loaded) {
+function view(status, loaded, nowMs) {
   if (!loaded || !status) {
-    return { summary: "PenguID: checking" + ELLIPSIS, attention: false, rows: [], mood: "ready", checks: [] }
+    return { summary: "PenguID: checking" + ELLIPSIS, attention: false, rows: [], mood: "ready", checks: [], gateNeeded: false, gateText: "", dueText: "" }
   }
 
   var rows = []
@@ -89,7 +89,24 @@ function view(status, loaded) {
   var list = status.checks
   var checks = (Array.isArray(list) || list instanceof Array ? Array.prototype.slice.call(list) : []).filter(function (c) { return c && c.id !== "login-wiring" })
   var summary = attention.length > 0 ? attention[0] : "Face unlock is on"
-  return { summary: summary, attention: attention.length > 0, rows: rows, mood: attention.length > 0 ? "paused" : "ready", checks: checks }
+  // The 48-hour and 5-refusal rules can be satisfied from the panel with the password.
+  var gateNeeded = !!(lock.ours && lock.face && (lock.blocked === "48h" || lock.blocked === "failures" || lock.blocked === "unknown"))
+  var gateText = lock.blocked === "failures"
+    ? "Five faces in a row were refused. Type your password to turn face unlock back on."
+    : "Type your password to turn face unlock back on for the next 48 hours."
+  var due = gateNeeded ? "" : dueText(lock.lastPasswordAt, lock.sessionStartedAt, nowMs === undefined ? Date.now() : nowMs)
+  return { summary: summary, attention: attention.length > 0, rows: rows, mood: attention.length > 0 ? "paused" : "ready", checks: checks, gateNeeded: gateNeeded, gateText: gateNeeded ? gateText : "", dueText: due }
+}
+
+// When the password is due again: 48 hours after the later of the last password use and the session login.
+function dueText(lastMs, sessionMs, nowMs) {
+  var last = Math.max(Number(lastMs) || 0, Number(sessionMs) || 0)
+  if (last <= 0) return ""
+  var left = last + 48 * 3600 * 1000 - nowMs
+  if (left <= 0) return ""
+  var minutes = Math.round(left / 60000)
+  if (minutes < 60) return "Password needed again in " + Math.max(1, minutes) + " min"
+  return "Password needed again in " + Math.round(minutes / 60) + " h"
 }
 
 // One irlume `auth test --events=jsonl` run: a state for the mark and a sentence.

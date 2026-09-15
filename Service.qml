@@ -752,6 +752,9 @@ Item {
     path: root.faceStatePath
     atomicWrites: true
     printErrors: false
+    // The panel can confirm the password too; it writes this file and the new time applies here at once.
+    watchChanges: true
+    onFileChanged: reload()
     onLoaded: root.loadFaceState(text())
     onLoadFailed: root.loadFaceState("")
   }

@@ -5,6 +5,7 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
+import Quickshell.Services.Pam
 import qs.Commons
 import qs.Ui
 import "PenguidModel.js" as Model
@@ -32,8 +33,13 @@ Panel {
   property string testText: ""
   // The action waiting for its second click.
   property string confirmAction: ""
+  // The 48-hour password gate, confirmed here with the same password-only PAM stack the lock screen uses.
+  property bool checkingPassword: false
+  property string pendingPassword: ""
+  property string passwordError: ""
+  property bool passwordConfirmed: false
 
-  readonly property var view: Model.view(status, statusLoaded)
+  readonly property var view: Model.view(status, statusLoaded, Date.now())
   readonly property bool needsAttention: view.attention
   readonly property string summaryText: "PenguID: " + view.summary
   readonly property color fg: root.barForeground
@@ -41,7 +47,11 @@ Panel {
   readonly property string headerMood: testState !== "" ? testState : view.mood
 
   onOpenedChanged: {
-    if (!opened) confirmAction = ""
+    if (!opened) {
+      confirmAction = ""
+      passwordError = ""
+      passwordField.text = ""
+    }
     openTicks = 0
   }
 
@@ -145,6 +155,74 @@ Panel {
     testProc.running = true
   }
 
+  // ---------------------------------------------------------------- password gate
+
+  PamContext {
+    id: passwordCheck
+    config: "omarchy-lock-password"
+    user: Quickshell.env("USER") || Quickshell.env("LOGNAME")
+
+    onResponseRequiredChanged: root.respondToPassword()
+    onPamMessage: root.respondToPassword()
+
+    // PamContext follows an error with completed(Error), so this is the only handler.
+    onCompleted: function (result) {
+      root.checkingPassword = false
+      root.pendingPassword = ""
+      if (result === PamResult.Success) root.recordPassword()
+      else if (result === PamResult.MaxTries) root.passwordError = "Too many tries. Wait a couple of minutes, then try again"
+      else if (result === PamResult.Failed) root.passwordError = "That password did not work"
+      else root.passwordError = "The password could not be checked"
+    }
+  }
+
+  // The lock screen's rule state. The lock screen watches this file and applies the new time at once.
+  FileView {
+    id: faceStateFile
+    path: Quickshell.env("HOME") + "/.local/state/penguid/state.json"
+    atomicWrites: true
+    printErrors: false
+  }
+
+  Timer {
+    id: passwordConfirmedClear
+    interval: 8000
+    onTriggered: root.passwordConfirmed = false
+  }
+
+  Timer {
+    id: passwordRefresh
+    interval: 800
+    onTriggered: root.refresh(true)
+  }
+
+  function submitPassword(value) {
+    if (root.checkingPassword || !value) return
+    root.pendingPassword = value
+    root.passwordError = ""
+    root.checkingPassword = true
+    if (!passwordCheck.start()) {
+      root.checkingPassword = false
+      root.pendingPassword = ""
+      root.passwordError = "The password could not be checked"
+      return
+    }
+    Qt.callLater(root.respondToPassword)
+  }
+
+  function respondToPassword() {
+    if (!root.checkingPassword || !passwordCheck.active || !passwordCheck.responseRequired) return
+    passwordCheck.respond(root.pendingPassword)
+  }
+
+  function recordPassword() {
+    faceStateFile.setText(JSON.stringify({ version: 1, lastPasswordAt: Date.now(), faceFailures: 0 }, null, 2) + "\n")
+    root.passwordError = ""
+    root.passwordConfirmed = true
+    passwordConfirmedClear.restart()
+    passwordRefresh.restart()
+  }
+
   // ---------------------------------------------------------------- actions
 
   function launch(action) {
@@ -212,7 +290,8 @@ Panel {
     bar: root.bar
     open: root.opened
     centerOnBar: true
-    focusTarget: keyCatcher
+    // Paused: the password field takes the keys as soon as the panel opens.
+    focusTarget: root.view.gateNeeded ? passwordField : keyCatcher
     popoutSwitching: root.popoutSwitching
     popoutSwitchClosing: root.popoutSwitchClosing
     contentWidth: panel.fittedContentWidth(Style.space(430))
@@ -221,6 +300,8 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // The catcher takes keys before its children; step aside while the password field is typed into.
+      blocked: passwordField.activeFocus
       onCloseRequested: root.close()
       onTabRequested: function (direction) { root.switchPanel(direction) }
 
@@ -262,7 +343,7 @@ Panel {
 
             Text {
               Layout.fillWidth: true
-              text: root.testText !== "" ? root.testText : root.view.summary
+              text: root.testText !== "" ? root.testText : (root.passwordConfirmed ? "Password confirmed: face unlock is on for the next 48 hours" : root.view.summary)
               color: root.testState === "refused" ? Color.urgent : root.fg
               opacity: root.testText !== "" ? 1 : 0.7
               font.pixelSize: Style.font.bodySmall
@@ -318,6 +399,92 @@ Panel {
               onActivated: root.press(action, true)
             }
           }
+        }
+
+        ColumnLayout {
+          Layout.fillWidth: true
+          visible: root.view.gateNeeded
+          spacing: Style.space(6)
+
+          Text {
+            Layout.fillWidth: true
+            text: root.view.gateText
+            color: root.fg
+            opacity: 0.85
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.Wrap
+          }
+
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(8)
+
+            Rectangle {
+              Layout.fillWidth: true
+              implicitHeight: Style.space(28)
+              radius: Style.space(6)
+              color: "transparent"
+              border.width: 1
+              border.color: passwordField.activeFocus ? Color.accent : root.faint
+
+              TextInput {
+                id: passwordField
+                anchors.fill: parent
+                anchors.leftMargin: Style.space(10)
+                anchors.rightMargin: Style.space(10)
+                verticalAlignment: TextInput.AlignVCenter
+                echoMode: TextInput.Password
+                color: root.fg
+                font.pixelSize: Style.font.body
+                clip: true
+                enabled: !root.checkingPassword
+                onAccepted: {
+                  var value = text
+                  text = ""
+                  root.submitPassword(value)
+                }
+                Keys.onEscapePressed: root.close()
+              }
+
+              Text {
+                anchors.fill: passwordField
+                verticalAlignment: Text.AlignVCenter
+                visible: passwordField.text.length === 0
+                text: root.checkingPassword ? "Checking" + root.ellipsis : "Password"
+                color: root.fg
+                opacity: 0.4
+                font.pixelSize: Style.font.body
+              }
+            }
+
+            TextButton {
+              label: root.checkingPassword ? "Checking" + root.ellipsis : "Confirm"
+              busy: root.checkingPassword
+              onActivated: {
+                var value = passwordField.text
+                passwordField.text = ""
+                root.submitPassword(value)
+              }
+            }
+          }
+
+          Text {
+            Layout.fillWidth: true
+            visible: root.passwordError !== ""
+            text: root.passwordError
+            color: Color.urgent
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.Wrap
+          }
+        }
+
+        Text {
+          Layout.fillWidth: true
+          visible: !root.view.gateNeeded && root.view.dueText !== ""
+          text: root.view.dueText
+          color: root.fg
+          opacity: 0.5
+          font.pixelSize: Style.font.caption
         }
 
         Rectangle {

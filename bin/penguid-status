@@ -110,6 +110,8 @@ def main():
             "blocked": lock.get("faceBlocked") or "",
             "failures": lock.get("faceFailures") or 0,
             "locked": bool(lock.get("locked")),
+            "lastPasswordAt": lock.get("lastPasswordAt") or 0,
+            "sessionStartedAt": lock.get("sessionStartedAt") or 0,
         },
         "privileged": {
             "sudo": wired("/etc/pam.d/sudo"),
