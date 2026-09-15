@@ -10,10 +10,26 @@
     "clonedFrom": "omarchy.lock"
   },
   "kinds": [
-    "service"
+    "service",
+    "bar-widget"
   ],
   "keepLoaded": true,
   "entryPoints": {
-    "service": "Service.qml"
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "PenguID",
+    "description": "Face unlock status, a face test and enrollment",
+    "category": "System",
+    "aliases": [
+      "penguid",
+      "face",
+      "face unlock",
+      "irlume",
+      "biometric",
+      "login"
+    ],
+    "defaultSection": "right"
   }
 }

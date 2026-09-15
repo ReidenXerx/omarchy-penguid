@@ -1,0 +1,128 @@
+#!/usr/bin/python3 -B
+"""PenguID status for the bar widget and panel, as one JSON document on stdout.
+
+It reads:
+- irlume's machine API (status, profiles and, unless --quick, doctor) and its sensor policy;
+- the lock screen's own status over Omarchy's shell IPC;
+- whether sudo and polkit carry the face lines that tools/privileged-pam.sh adds.
+
+Every command runs by absolute path, with a deadline and an output cap. Nothing here changes anything. --quick skips
+the doctor checks, for the refresh while the panel is closed.
+"""
+import json
+import os
+import subprocess
+import sys
+
+IRLUME = "/usr/bin/irlume"
+OMARCHY_SHELL = "/usr/bin/omarchy-shell"
+PAM_MARKER = "# face-unlock: face via irlume"
+OUTPUT_CAP = 256 * 1024
+READ_CAP = 64 * 1024
+TIMEOUT = 15
+
+
+def run(argv, timeout=TIMEOUT):
+    try:
+        proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if len(proc.stdout) > OUTPUT_CAP:
+        return None
+    return proc.stdout.decode("utf-8", "replace")
+
+
+def machine(*args):
+    """The data of one irlume machine-API document, or None when the call failed or answered not ok."""
+    text = run([IRLUME, *args, "--json", "--contract", "1"])
+    if not text or not text.strip():
+        return None
+    try:
+        doc = json.loads(text.strip().splitlines()[-1])
+    except ValueError:
+        return None
+    if not isinstance(doc, dict) or not doc.get("ok"):
+        return None
+    data = doc.get("data")
+    return data if isinstance(data, dict) else None
+
+
+def sensor_mode():
+    text = (run([IRLUME, "auth", "sensor", "status"]) or "").lower()
+    if "ir-only" in text:
+        return "ir-only"
+    if "dual" in text:
+        return "dual"
+    return "unknown"
+
+
+def lock_status():
+    text = run([OMARCHY_SHELL, "lock", "status"], timeout=5)
+    if not text:
+        return {}
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def wired(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read(READ_CAP)
+    except OSError:
+        return False
+    return any(line.startswith(PAM_MARKER) for line in text.splitlines())
+
+
+def main():
+    quick = "--quick" in sys.argv[1:]
+    installed = os.access(IRLUME, os.X_OK)
+
+    status = machine("status") if installed else None
+    profiles = machine("profiles", "list") if installed else None
+    doctor = machine("doctor") if installed and not quick else None
+    lock = lock_status()
+
+    enrollment = (status or {}).get("enrollment") or {}
+    names = [p.get("display_name") for p in ((profiles or {}).get("profiles") or [])
+             if isinstance(p, dict) and isinstance(p.get("display_name"), str)]
+
+    out = {
+        "version": 1,
+        "irlumeInstalled": installed,
+        "engine": {
+            "reachable": status is not None,
+            "daemon": (status or {}).get("daemon"),
+            "sensor": sensor_mode() if installed else "unknown",
+        },
+        "enrollment": {
+            "known": bool(enrollment.get("known")),
+            "profiles": enrollment.get("profiles"),
+            "scans": enrollment.get("scans"),
+            "templates": (status or {}).get("templates"),
+        },
+        "profile": names[0] if names else None,
+        "lock": {
+            "ours": lock.get("impl") == "reidenxerx.penguid",
+            "face": bool(lock.get("face")),
+            "blocked": lock.get("faceBlocked") or "",
+            "failures": lock.get("faceFailures") or 0,
+            "locked": bool(lock.get("locked")),
+        },
+        "privileged": {
+            "sudo": wired("/etc/pam.d/sudo"),
+            "polkit": wired("/etc/pam.d/polkit-1"),
+        },
+    }
+    if doctor is not None:
+        out["checks"] = [{"id": c.get("id"), "state": c.get("state")}
+                         for c in (doctor.get("checks") or [])
+                         if isinstance(c, dict) and c.get("state") in ("warn", "fail")]
+    print(json.dumps(out))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
