@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PenguID · Face unlock for Omarchy</title>
+<meta name="description" content="PenguID brings Face ID-style face unlock to Omarchy: the infrared camera recognizes you on the lock screen, at sudo and in polkit prompts, while your password stays the real key.">
+<meta name="color-scheme" content="light dark">
+<meta property="og:title" content="PenguID · Face unlock for Omarchy">
+<meta property="og:description" content="Look at your laptop and you're in. Infrared face unlock for Omarchy, with TPM-sealed face data and Face ID-style password rules.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Cpath d='M8 34V22Q8 8 22 8H34M86 8H98Q112 8 112 22V34M112 86V98Q112 112 98 112H86M34 112H22Q8 112 8 98V86' fill='none' stroke='%23F2B441' stroke-width='12' stroke-linecap='round'/%3E%3Cpath d='M60 24C70 24 77 31 77 42C77 52 84 64 84 76C84 88 73 94 60 94C47 94 36 88 36 76C36 64 43 52 43 42C43 31 50 24 60 24Z' fill='%23F2B441'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+  :root {
+    --ground: #F2F3F0;
+    --surface: #FBFBF9;
+    --ink: #16191D;
+    --muted: #596069;
+    --rule: #D5D9D5;
+    --chip: #E6E9E5;
+    --accent: #9A5600;
+    --ok: #2D7A4B;
+    --bad: #B42318;
+    --tint: color-mix(in oklab, var(--accent) 10%, var(--surface));
+    --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    --body: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0F1215;
+      --surface: #161A1E;
+      --ink: #E6E9E5;
+      --muted: #9AA2AA;
+      --rule: #2A3036;
+      --chip: #1F242A;
+      --accent: #F2B441;
+      --ok: #5CC08A;
+      --bad: #F0877D;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0F1215;
+    --surface: #161A1E;
+    --ink: #E6E9E5;
+    --muted: #9AA2AA;
+    --rule: #2A3036;
+    --chip: #1F242A;
+    --accent: #F2B441;
+    --ok: #5CC08A;
+    --bad: #F0877D;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font: 16px/1.62 var(--body);
+    padding-inline: 20px;
+    padding-block: 0 64px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 1060px; margin: 0 auto; }
+  p { margin: 0 0 12px; max-width: 68ch; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: .18em; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+  code { font-family: var(--mono); font-size: .86em; background: var(--chip); padding: .06em .34em; border-radius: 4px; overflow-wrap: anywhere; }
+  b, strong { font-weight: 600; }
+  .defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+  .eyebrow, .label {
+    font: 500 12px/1.4 var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0;
+  }
+
+  .nav { display: flex; align-items: center; justify-content: space-between; gap: 12px 24px; flex-wrap: wrap; padding-block: 18px; border-bottom: 1px solid var(--rule); }
+  .brand { font: 650 1.2rem/1 var(--display); letter-spacing: -.01em; color: var(--ink); text-decoration: none; display: inline-flex; align-items: center; gap: 10px; }
+  .brand svg { width: 26px; height: 26px; color: var(--accent); }
+  .nav-links { display: flex; flex-wrap: wrap; gap: 6px 20px; font: 13px/1.5 var(--mono); }
+  .nav-links a { color: var(--muted); text-decoration: none; border-bottom: 1px solid transparent; }
+  .nav-links a:hover { color: var(--accent); border-color: currentColor; }
+
+  .hero { display: grid; grid-template-columns: minmax(0, 1fr); gap: 32px; padding-block: 64px 40px; align-items: center; }
+  @media (min-width: 860px) { .hero { grid-template-columns: minmax(0, 1fr) 300px; } }
+  h1 {
+    font-family: var(--display);
+    font-weight: 650;
+    font-variation-settings: "opsz" 96;
+    font-size: clamp(3rem, 8vw, 5.6rem);
+    line-height: .98;
+    letter-spacing: -.035em;
+    margin: 14px 0 18px;
+  }
+  .id { color: var(--accent); }
+  .lede { font-size: clamp(1.1rem, 2vw, 1.3rem); line-height: 1.5; max-width: 34ch; margin: 0; }
+  .lede strong { font-weight: 600; }
+  .cta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+  .button { display: inline-flex; align-items: center; padding: 11px 18px; border-radius: 999px; font: 500 .95rem/1 var(--body); text-decoration: none; border: 1px solid var(--ink); color: var(--ink); }
+  .button.primary { background: var(--ink); color: var(--ground); }
+  .button:hover { border-color: var(--accent); }
+  .button.primary:hover { background: var(--accent); border-color: var(--accent); color: var(--ground); }
+  .button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 26px 0 0; padding: 0; list-style: none; }
+  .facts li { font: 500 12px/1 var(--mono); letter-spacing: .03em; padding: 7px 11px; border-radius: 999px; background: var(--chip); }
+
+  .hero-mark { margin: 0; display: grid; justify-items: center; gap: 12px; }
+  .hero-mark svg { width: min(260px, 70vw); height: auto; aspect-ratio: 1; max-width: 100%; color: var(--muted); animation: mark-color 7s ease-in-out infinite; }
+  .hero-mark figcaption { font: 500 12px/1.4 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .hero-mark .pop { transform-box: view-box; transform-origin: 60px 60px; animation: mark-pop 7s ease-out infinite; }
+  .hero-mark .frame { transform-box: view-box; transform-origin: 60px 60px; animation: mark-breathe 7s ease-in-out infinite; }
+  .hero-mark .eyes-open { animation: eyes-open 7s step-end infinite; }
+  .hero-mark .eyes-wink { opacity: 0; animation: eyes-wink 7s step-end infinite; }
+  @keyframes mark-color {
+    0%, 12% { color: var(--muted); }
+    18%, 52% { color: var(--accent); }
+    57%, 84% { color: var(--ok); }
+    92%, 100% { color: var(--muted); }
+  }
+  @keyframes mark-breathe {
+    0%, 18% { transform: scale(1); }
+    26% { transform: scale(.9); }
+    35% { transform: scale(1); }
+    44% { transform: scale(.9); }
+    53%, 100% { transform: scale(1); }
+  }
+  @keyframes mark-pop {
+    0%, 55% { transform: scale(1); }
+    59% { transform: scale(1.08); }
+    64%, 100% { transform: scale(1); }
+  }
+  @keyframes eyes-open { 0% { opacity: 1; } 56% { opacity: 0; } 86% { opacity: 1; } }
+  @keyframes eyes-wink { 0% { opacity: 0; } 56% { opacity: 1; } 86% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .hero-mark svg { animation: none; color: var(--accent); }
+    .hero-mark .pop, .hero-mark .frame, .hero-mark .eyes-open, .hero-mark .eyes-wink { animation: none; }
+  }
+
+  section { padding-block: 64px 4px; }
+  .kicker { margin-bottom: 10px; }
+  h2 {
+    font-family: var(--display);
+    font-weight: 620;
+    font-variation-settings: "opsz" 48;
+    font-size: clamp(1.7rem, 3.4vw, 2.5rem);
+    line-height: 1.08;
+    letter-spacing: -.02em;
+    margin: 0 0 14px;
+    max-width: 24ch;
+    text-wrap: balance;
+  }
+  h3 { font: 600 1.05rem/1.35 var(--body); margin: 0 0 6px; text-wrap: balance; }
+  .intro { color: var(--muted); max-width: 64ch; }
+
+  .places { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; margin-top: 22px; }
+  .place { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 20px; display: grid; gap: 10px; align-content: start; }
+  .place p { margin: 0; font-size: .95rem; }
+  .place svg { width: 44px; height: 44px; }
+  .place .snippet { font: 13px/1.6 var(--mono); background: var(--chip); border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
+  .snippet .dim { color: var(--muted); }
+
+  .states { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 18px; margin-top: 22px; }
+  @media (min-width: 760px) { .states { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+  .state { border-top: 2px solid currentColor; padding-top: 14px; display: grid; gap: 8px; align-content: start; }
+  .state svg { width: 76px; height: 76px; }
+  .state b { color: var(--ink); }
+  .state span { color: var(--muted); font-size: .9rem; }
+  .state.ready { color: var(--muted); }
+  .state.looking { color: var(--accent); }
+  .state.unlocked { color: var(--ok); }
+  .state.again { color: var(--bad); }
+  .breathe { transform-box: view-box; transform-origin: 60px 60px; animation: breathe 1.8s ease-in-out infinite; }
+  @keyframes breathe { 50% { transform: scale(.9); } }
+  @media (prefers-reduced-motion: reduce) { .breathe { animation: none; } }
+
+  .claims { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 40px; margin-top: 18px; }
+  .claim { padding: 20px 0 8px; border-top: 1px solid var(--rule); }
+  .claim h3 { display: flex; gap: 10px; align-items: baseline; }
+  .claim h3::before { content: ""; width: 9px; height: 9px; border-radius: 2px; background: var(--accent); flex: none; transform: translateY(-1px); }
+  .claim p { color: var(--ink); font-size: .96rem; }
+
+  .callout { border-left: 3px solid var(--accent); padding: 4px 0 4px 18px; margin: 22px 0 0; max-width: 76ch; }
+  .list { margin: 8px 0 4px; padding-left: 1.15em; max-width: 72ch; }
+  .list li { margin: 7px 0; }
+
+  .arch { margin-top: 18px; }
+  .tier { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 14px 0; border-top: 1px solid var(--rule); }
+  @media (min-width: 760px) { .tier { grid-template-columns: 132px minmax(0, 1fr); gap: 18px; } }
+  .tier-label { font: 500 11.5px/1.35 var(--mono); text-transform: uppercase; letter-spacing: .07em; color: var(--muted); padding-top: 10px; }
+  .boxes { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+  .box { flex: 1 1 190px; border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; font-size: .9rem; line-height: 1.4; }
+  .box b { display: block; margin-bottom: 2px; }
+  .box span { display: block; color: var(--muted); font-size: .85rem; }
+  .box.engine { background: var(--chip); border-color: transparent; }
+  .box.ours { background: var(--tint); border-color: color-mix(in oklab, var(--accent) 45%, var(--rule)); }
+  .pipe .box { flex: 1 1 128px; }
+  .arrow { align-self: center; color: var(--muted); font-family: var(--mono); }
+  @media (max-width: 759px) { .arrow { display: none; } }
+
+  figure.stanza { margin: 26px 0 0; }
+  pre { margin: 0 0 8px; padding: 14px 16px; background: var(--chip); border-radius: 8px; overflow-x: auto; font: 13px/1.65 var(--mono); }
+  pre .ours { color: var(--accent); }
+  figure.stanza figcaption { font-size: .9rem; color: var(--muted); max-width: 76ch; }
+
+  ol.steps { list-style: none; padding: 0; margin: 20px 0 0; max-width: 88ch; counter-reset: step; }
+  ol.steps > li { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 14px; padding: 18px 0; border-top: 1px solid var(--rule); counter-increment: step; }
+  ol.steps > li::before { content: counter(step); font: 650 1.7rem/1 var(--display); color: var(--accent); font-variant-numeric: tabular-nums; }
+  ol.steps p { margin-bottom: 8px; }
+  ol.steps pre { margin-top: 8px; }
+  .needs { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; padding: 0; list-style: none; }
+  .needs li { font-size: .92rem; padding: 7px 12px; border: 1px solid var(--rule); border-radius: 999px; }
+
+  .foot { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--rule); color: var(--muted); font-size: .88rem; display: grid; gap: 10px; }
+  .foot p { max-width: 90ch; margin: 0; }
+</style>
+</head>
+<body>
+
+<svg class="defs" aria-hidden="true" focusable="false">
+  <defs>
+    <g id="fu-frame">
+      <path d="M8 34V22Q8 8 22 8H34"/>
+      <path d="M86 8H98Q112 8 112 22V34"/>
+      <path d="M112 86V98Q112 112 98 112H86"/>
+      <path d="M34 112H22Q8 112 8 98V86"/>
+    </g>
+    <g id="fu-body" transform="translate(60 62) scale(.9) translate(-60 -62)">
+      <path d="M60 24C70 24 77 31 77 42C77 52 84 64 84 76C84 88 73 94 60 94C47 94 36 88 36 76C36 64 43 52 43 42C43 31 50 24 60 24Z"/>
+      <path d="M50 56C45 65 45 79 51 85C55 89 65 89 69 85C75 79 75 65 70 56"/>
+    </g>
+    <g id="fu-eyes" transform="translate(60 62) scale(.9) translate(-60 -62)">
+      <path d="M53 35V40"/>
+      <path d="M67 35V40"/>
+    </g>
+    <g id="fu-wink" transform="translate(60 62) scale(.9) translate(-60 -62)">
+      <path d="M53 35V40"/>
+      <path d="M63.5 39.5Q67 34.5 70.5 39.5"/>
+    </g>
+    <g id="fu-flat" transform="translate(60 62) scale(.9) translate(-60 -62)">
+      <path d="M50.5 38.5H55.5"/>
+      <path d="M64.5 38.5H69.5"/>
+    </g>
+    <g id="fu-beak" transform="translate(60 62) scale(.9) translate(-60 -62)">
+      <path d="M55 46L60 50.5L65 46"/>
+    </g>
+    <g id="fu-feet" transform="translate(60 62) scale(.9) translate(-60 -62)">
+      <path d="M48 100H56"/>
+      <path d="M64 100H72"/>
+    </g>
+    <g id="fu-mini-body">
+      <path d="M60 24C70 24 77 31 77 42C77 52 84 64 84 76C84 88 73 94 60 94C47 94 36 88 36 76C36 64 43 52 43 42C43 31 50 24 60 24Z"/>
+    </g>
+  </defs>
+</svg>
+
+<div class="page">
+
+<header class="nav">
+  <a class="brand" href="#top">
+    <svg viewBox="0 0 120 120" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <use href="#fu-frame" stroke-width="12"/>
+      <use href="#fu-mini-body" fill="currentColor" stroke="none"/>
+    </svg>
+    <span>Pengu<span class="id">ID</span></span>
+  </a>
+  <nav class="nav-links" aria-label="Sections">
+    <a href="#everywhere">Everywhere</a>
+    <a href="#security">Security</a>
+    <a href="#how">How it works</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/ReidenXerx/omarchy-penguid">GitHub</a>
+  </nav>
+</header>
+
+<main id="top">
+
+<div class="hero">
+  <div>
+    <p class="eyebrow">Face unlock for Omarchy · open source · GPL-3.0</p>
+    <h1>Pengu<span class="id">ID</span></h1>
+    <p class="lede">Look at your laptop and you're in. <strong>PenguID recognizes you with the infrared camera</strong> on the lock screen, at sudo and in polkit prompts, while your password stays the real key.</p>
+    <div class="cta">
+      <a class="button primary" href="#install">Get PenguID</a>
+      <a class="button" href="#security">Why it's safe</a>
+    </div>
+    <ul class="facts" aria-label="At a glance">
+      <li>Infrared camera</li>
+      <li>TPM-sealed face data</li>
+      <li>Face ID-style password rules</li>
+      <li>Nothing leaves the laptop</li>
+    </ul>
+  </div>
+  <figure class="hero-mark">
+    <svg viewBox="0 0 120 120" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="The PenguID mark: scan corners around a penguin that looks, then winks">
+      <g class="pop">
+        <g class="frame"><use href="#fu-frame" stroke-width="6"/></g>
+        <use href="#fu-body" stroke-width="5"/>
+        <g class="eyes-open"><use href="#fu-eyes" stroke-width="5.6"/></g>
+        <g class="eyes-wink"><use href="#fu-wink" stroke-width="5.2"/></g>
+        <use href="#fu-beak" stroke-width="5"/>
+        <use href="#fu-feet" stroke-width="5"/>
+      </g>
+    </svg>
+    <figcaption>Looking · recognized</figcaption>
+  </figure>
+</div>
+
+<section id="everywhere" aria-labelledby="everywhere-h">
+  <p class="eyebrow kicker">Everywhere you're asked</p>
+  <h2 id="everywhere-h">One penguin for every unlock</h2>
+  <p class="intro">Face unlock is only useful if it is there when a prompt appears. PenguID covers the three places Omarchy asks who you are, and it shows you what it is doing each time.</p>
+  <div class="places">
+    <article class="place">
+      <p class="label">Lock screen</p>
+      <h3>Open the lid, look, done</h3>
+      <p>A key, a click or opening the lid starts a scan, while the password field stays live the whole time. Three tries per wake, and none with the lid shut.</p>
+    </article>
+    <article class="place">
+      <p class="label">sudo and polkit</p>
+      <h3>Press Enter for face</h3>
+      <div class="snippet"><span class="dim">$</span> sudo pacman -Syu
+Press Enter for face, or type your password:</div>
+      <p>Press Enter and look at the camera, or type your password as always. Polkit prompts get their own PenguID dialog.</p>
+    </article>
+    <article class="place">
+      <p class="label">Face HUD</p>
+      <h3>Shown above everything</h3>
+      <p>Whenever face runs outside the lock screen, a small card with the penguin appears near the top of the screen, above every window and fullscreen app, like Face ID on an iPhone. It never takes a click.</p>
+    </article>
+  </div>
+</section>
+
+<section id="states" aria-labelledby="states-h">
+  <p class="eyebrow kicker">It shows its work</p>
+  <h2 id="states-h">You always know what the camera is doing</h2>
+  <div class="states">
+    <div class="state ready">
+      <svg viewBox="0 0 120 120" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <use href="#fu-frame" stroke-width="6"/>
+        <use href="#fu-body" stroke-width="5"/>
+        <use href="#fu-eyes" stroke-width="5.6"/>
+        <use href="#fu-beak" stroke-width="5"/>
+        <use href="#fu-feet" stroke-width="5"/>
+      </svg>
+      <b>Ready</b>
+      <span>Face unlock is on, and the camera is off.</span>
+    </div>
+    <div class="state looking">
+      <svg viewBox="0 0 120 120" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <use class="breathe" href="#fu-frame" stroke-width="6"/>
+        <use href="#fu-body" stroke-width="5"/>
+        <use href="#fu-eyes" stroke-width="5.6"/>
+        <use href="#fu-beak" stroke-width="5"/>
+        <use href="#fu-feet" stroke-width="5"/>
+      </svg>
+      <b>Looking</b>
+      <span>The infrared camera is on. The corners breathe.</span>
+    </div>
+    <div class="state unlocked">
+      <svg viewBox="0 0 120 120" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <use href="#fu-frame" stroke-width="6"/>
+        <use href="#fu-body" stroke-width="5"/>
+        <use href="#fu-wink" stroke-width="5.2"/>
+        <use href="#fu-beak" stroke-width="5"/>
+        <use href="#fu-feet" stroke-width="5"/>
+      </svg>
+      <b>Recognized</b>
+      <span>A match. The penguin winks, and you're in.</span>
+    </div>
+    <div class="state again">
+      <svg viewBox="0 0 120 120" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <use href="#fu-frame" stroke-width="6"/>
+        <use href="#fu-body" stroke-width="5"/>
+        <use href="#fu-flat" stroke-width="5.2"/>
+        <use href="#fu-beak" stroke-width="5"/>
+        <use href="#fu-feet" stroke-width="5"/>
+      </svg>
+      <b>Try again</b>
+      <span>No match. Flat eyes, and your password is right there.</span>
+    </div>
+  </div>
+</section>
+
+<section id="security" aria-labelledby="security-h">
+  <p class="eyebrow kicker">Secure by design</p>
+  <h2 id="security-h">Convenient, without becoming the weakest lock</h2>
+  <p class="intro">PenguID treats your face as a fast second way in, never a replacement for your password. Every part that touches authentication is small, local and open to read.</p>
+  <div class="claims">
+    <article class="claim">
+      <h3>Your face stays on this laptop</h3>
+      <p>irlume stores numbers derived from your face, never photos, encrypted with AES-256-GCM under a key sealed by the TPM. Nothing goes to a cloud, and nothing needs one.</p>
+    </article>
+    <article class="claim">
+      <h3>It looks in infrared</h3>
+      <p>The IR camera lights your face with its own emitter, and a trained anti-spoofing model checks for a live face. Photos held up on a phone screen were refused in testing.</p>
+    </article>
+    <article class="claim">
+      <h3>Your password stays in charge</h3>
+      <p>As on an iPhone, the first login after boot takes your password, which also opens your keyring. Face pauses after 48 hours without the password or after 5 refused faces, and a typed password works at every prompt, straight away.</p>
+    </article>
+    <article class="claim">
+      <h3>Nothing scans until you ask</h3>
+      <p>At sudo and polkit prompts the camera only starts when you press Enter. A stray sudo that nobody answers never turns it on, and with the lid shut it stays off.</p>
+    </article>
+    <article class="claim">
+      <h3>It fails closed</h3>
+      <p>If PenguID's rules check can't run, face is skipped and you simply get the password prompt. If it can't tell when you last typed your password, face waits for it. Unknown never means allowed.</p>
+    </article>
+    <article class="claim">
+      <h3>Small parts, easy to audit</h3>
+      <p>The PAM module behind the Enter prompt only checks whether your answer was empty, and never keeps or logs a password. The rules helper switches to your account before it touches a file, and polkit's sandbox stays on.</p>
+    </article>
+  </div>
+
+  <div class="callout">
+    <h3>What it won't pretend</h3>
+    <ul class="list">
+      <li>A 2D infrared camera can't measure depth the way Face ID's sensor does, so a realistic 3D mask is outside what it can stop.</li>
+      <li>Printed photos haven't been tested yet with irlume's IR-only mode, the setting PenguID was developed with.</li>
+      <li>Software already running as you could press Enter at a prompt, just as it could catch a typed password. A face proves you are there, not that you meant it.</li>
+      <li>An unlock takes about 3.6 seconds on the laptop PenguID was built on, most of it the IR camera settling.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="how" aria-labelledby="how-h">
+  <p class="eyebrow kicker">How it works</p>
+  <h2 id="how-h">Built on proven parts, joined with care</h2>
+  <p class="intro">irlume does the recognition. PenguID decides when face may run, asks for your intent, and shows every step on screen.</p>
+  <div class="arch">
+    <div class="tier">
+      <div class="tier-label">Where you are</div>
+      <div class="boxes">
+        <div class="box ours"><b>Lock screen</b><span>Omarchy's lock screen with a face lane beside the password</span></div>
+        <div class="box"><b>sudo</b><span>In any terminal</span></div>
+        <div class="box ours"><b>Polkit dialog</b><span>Omarchy's dialog, with the face lane</span></div>
+        <div class="box ours"><b>Face HUD</b><span>The penguin above every window</span></div>
+      </div>
+    </div>
+    <div class="tier">
+      <div class="tier-label">PenguID</div>
+      <div class="boxes pipe">
+        <div class="box ours"><b>Lid check</b><span>Shut means no scan</span></div>
+        <span class="arrow" aria-hidden="true">→</span>
+        <div class="box ours"><b>Password rules</b><span>48 hours, 5 refusals, fails closed</span></div>
+        <span class="arrow" aria-hidden="true">→</span>
+        <div class="box ours"><b>Your intent</b><span>Press Enter for face</span></div>
+      </div>
+    </div>
+    <div class="tier">
+      <div class="tier-label">irlume</div>
+      <div class="boxes pipe">
+        <div class="box engine"><b>Capture</b><span>IR frames, its own emitter</span></div>
+        <span class="arrow" aria-hidden="true">→</span>
+        <div class="box engine"><b>Liveness</b><span>IR checks and a trained model</span></div>
+        <span class="arrow" aria-hidden="true">→</span>
+        <div class="box engine"><b>Match</b><span>Against templates sealed by the TPM</span></div>
+      </div>
+    </div>
+    <div class="tier">
+      <div class="tier-label">Hardware</div>
+      <div class="boxes">
+        <div class="box"><b>IR camera</b><span>The Windows Hello kind</span></div>
+        <div class="box"><b>TPM 2.0</b><span>Holds the key to your face data</span></div>
+      </div>
+    </div>
+  </div>
+
+  <figure class="stanza">
+<pre><code>#%PAM-1.0
+<span class="ours"># face-unlock: face via irlume (press Enter); the password still works. Undo: tools/privileged-pam.sh disable
+auth       [success=4 default=ignore]  pam_exec.so quiet /usr/bin/omarchy-hw-laptop-closed
+auth       [success=ignore ignore=ignore default=3]  pam_exec.so quiet stdout /usr/local/lib/penguid/pam-gate check
+auth       [success=ignore default=2]  pam_penguid.so
+auth       sufficient                  pam_irlume.so
+auth       optional                    pam_penguid.so refused</span>
+auth       include                     system-auth
+<span class="ours">auth       optional                    pam_exec.so quiet /usr/local/lib/penguid/pam-gate record
+account    optional                    pam_penguid.so</span>
+account    include                     system-auth
+session    include                     system-auth
+session    optional                    pam_systemd.so class=none</code></pre>
+    <figcaption>Everything PenguID adds to <code>/etc/pam.d/sudo</code>, highlighted. The password stack below it is untouched, and one command takes it all out again.</figcaption>
+  </figure>
+</section>
+
+<section id="install" aria-labelledby="install-h">
+  <p class="eyebrow kicker">Get PenguID</p>
+  <h2 id="install-h">Set up in a few minutes</h2>
+  <ul class="needs" aria-label="What you need">
+    <li>Omarchy 4</li>
+    <li>An IR camera</li>
+    <li>TPM 2.0</li>
+    <li><a href="https://github.com/archledger/irlume">irlume</a> with your face enrolled</li>
+  </ul>
+  <ol class="steps">
+    <li>
+      <div>
+        <h3>Enroll your face in irlume</h3>
+        <p>PenguID uses irlume for recognition. Install it, then enroll:</p>
+        <pre><code>irlume enroll</code></pre>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Add PenguID to Omarchy</h3>
+        <p>This installs the lock screen, the bar penguin and the face HUD.</p>
+        <pre><code>omarchy plugin add https://github.com/ReidenXerx/omarchy-penguid.git --enable</code></pre>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Give the lock screen its face lane</h3>
+        <p>Create <code>/etc/pam.d/omarchy-lock-face</code> with:</p>
+        <pre><code>#%PAM-1.0
+auth       sufficient                  pam_irlume.so
+auth       required                    pam_deny.so
+account    include                     system-local-login</code></pre>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Turn on face for sudo and polkit</h3>
+        <p>Optional. Builds the Enter prompt, adds the password rules and wires both prompts:</p>
+        <pre><code>sudo ~/.config/omarchy/plugins/reidenxerx.penguid/tools/privileged-pam.sh enable</code></pre>
+      </div>
+    </li>
+    <li>
+      <div>
+        <h3>Use PenguID's polkit dialog</h3>
+        <p>Optional. It replaces Omarchy's polkit dialog with one that knows about face:</p>
+        <pre><code>cp -r ~/.config/omarchy/plugins/reidenxerx.penguid/polkit ~/.config/omarchy/plugins/reidenxerx.penguid-polkit
+omarchy-shell shell rescanPlugins
+omarchy plugin enable reidenxerx.penguid-polkit</code></pre>
+        <p>Only one polkit agent can run per session, so stop any other one, such as hyprpolkitagent, first.</p>
+      </div>
+    </li>
+  </ol>
+  <p class="intro">Changed your mind? <code>omarchy plugin disable reidenxerx.penguid</code> brings Omarchy's own lock screen back, and <code>privileged-pam.sh disable</code> takes face out of sudo and polkit.</p>
+</section>
+
+</main>
+
+<footer class="foot">
+  <p><strong>PenguID</strong> is free software under GPL-3.0-or-later. The lock screen and polkit dialog build on <a href="https://omarchy.org">Omarchy</a>'s own (MIT), the face lane on <a href="https://github.com/omacom/omarchy/pull/6863">Omarchy PR #6863</a> by @mateuszkowalczyk, and recognition on <a href="https://github.com/archledger/irlume">irlume</a> (GPL-3.0).</p>
+  <p>Like PenguID? <a href="https://donatello.to/DuduPhudu">Support its development</a>.</p>
+  <p>Face ID is a trademark of Apple Inc. Windows Hello is a trademark of Microsoft Corporation. PenguID is not affiliated with either.</p>
+</footer>
+
+</div>
+</body>
+</html>
