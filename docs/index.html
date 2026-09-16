@@ -267,6 +267,18 @@
 
   .foot { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--rule); color: var(--muted); font-size: .88rem; display: grid; gap: 10px; }
   .foot p { max-width: 90ch; margin: 0; }
+
+  /* Back to the hub these pages belong to. */
+  .nav .back {
+    order: -1;
+    display: inline-flex; align-items: center; gap: .5em;
+    font: 600 13px/1 var(--mono); color: inherit; text-decoration: none;
+    border: 1px solid var(--rule); border-radius: 999px;
+    padding: 8px 13px 8px 10px; opacity: .9;
+    transition: border-color .15s ease, opacity .15s ease;
+  }
+  .nav .back:hover { opacity: 1; border-color: currentColor; }
+  .nav .back span { line-height: 0; font-size: 1.1em; }
 </style>
 </head>
 <body>
@@ -311,6 +323,7 @@
 <div class="page">
 
 <header class="nav">
+  <a class="back" href="https://duduphudu.app/#plugins"><span>&larr;</span> duduphudu</a>
   <a class="brand" href="#top">
     <svg viewBox="0 0 120 120" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <use href="#fu-frame" stroke-width="12"/>
